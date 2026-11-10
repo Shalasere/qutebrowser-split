@@ -5,6 +5,7 @@
 """Management of sessions - saved tabs/windows."""
 
 import os
+import math
 import os.path
 import itertools
 import urllib
@@ -21,12 +22,78 @@ from qutebrowser.utils import (standarddir, objreg, qtutils, log, message,
 from qutebrowser.api import cmdutils
 from qutebrowser.config import config, configfiles
 from qutebrowser.completion.models import miscmodels
-from qutebrowser.mainwindow import mainwindow
+from qutebrowser.mainwindow import mainwindow, tabwidget
 from qutebrowser.qt import sip
 from qutebrowser.misc import objects, throttle
 
 
 _JsonType: TypeAlias = MutableMapping[str, Any]
+
+
+# Orientations of a pair of tabs (see TabWidget.pair_tabs) in a session file.
+_PAIR_ORIENTATIONS = {
+    'left-right': Qt.Orientation.Horizontal,
+    'top-bottom': Qt.Orientation.Vertical,
+}
+
+
+def _save_pairs(widget: tabwidget.TabWidget) -> list[_JsonType]:
+    """Get the session data for all tab pairs of a window.
+
+    The tabs are referenced by their (0-based) position in the saved list of
+    tabs of the window. The ratio is the fraction of the space for the first.
+    """
+    pairs: list[_JsonType] = []
+    for pair in widget.pairs():
+        pairs.append({
+            'tabs': [widget.indexOf(pair.first), widget.indexOf(pair.second)],
+            'orientation': next(
+                name for name, orientation in _PAIR_ORIENTATIONS.items()
+                if orientation == pair.orientation),
+            'ratio': pair.ratio,
+        })
+    return pairs
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _load_pairs(widget: tabwidget.TabWidget, data: Any) -> None:
+    """Restore the tab pairs of a window, after all of its tabs were created.
+
+    Malformed pairs are skipped (the tabs are all kept), and an out-of-range
+    ratio is clamped.
+    """
+    if not isinstance(data, list):
+        log.sessions.debug(f"Ignoring invalid pairs: {data!r}")
+        return
+
+    for entry in data:
+        try:
+            if not isinstance(entry, dict):
+                raise ValueError("not a mapping")
+            indices = entry.get('tabs')
+            if (not isinstance(indices, list) or len(indices) != 2 or
+                    not all(_is_int(idx) and 0 <= idx < widget.count()
+                            for idx in indices)):
+                raise ValueError("invalid tabs")
+            orientation_name = entry.get('orientation')
+            if (not isinstance(orientation_name, str) or
+                    orientation_name not in _PAIR_ORIENTATIONS):
+                raise ValueError("invalid orientation")
+            ratio = entry.get('ratio', 0.5)
+            if (isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or
+                    not math.isfinite(ratio)):
+                raise ValueError("invalid ratio")
+
+            first, second = (widget.widget(idx) for idx in indices)
+            assert first is not None
+            assert second is not None
+            widget.pair_tabs(first, second, _PAIR_ORIENTATIONS[orientation_name],
+                             ratio)
+        except ValueError as e:
+            log.sessions.debug(f"Ignoring invalid pair {entry!r}: {e}")
 
 
 class Sentinel:
@@ -289,6 +356,9 @@ class SessionManager(QObject):
                 active = i == tabbed_browser.widget.currentIndex()
                 win_data['tabs'].append(self._save_tab(tab, active,
                                                        with_history=with_history))
+            pairs = _save_pairs(tabbed_browser.widget)
+            if pairs:
+                win_data['pairs'] = pairs
             data['windows'].append(win_data)
         return data
 
@@ -472,6 +542,8 @@ class SessionManager(QObject):
                 new_tab.set_pinned(True)
         if tab_to_focus is not None:
             tabbed_browser.widget.setCurrentIndex(tab_to_focus)
+        if 'pairs' in win:
+            _load_pairs(tabbed_browser.widget, win['pairs'])
 
         window.show()
         if win.get('active', False):
