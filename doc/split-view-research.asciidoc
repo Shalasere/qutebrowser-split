@@ -6,6 +6,12 @@ It proposes two independently navigable existing tabs shown together in one
 window, with horizontal or vertical orientation. It does not propose arbitrary
 pane trees.
 
+Update 2026-11-10: the light-touch variant (a second page inside a tab, using
+the web inspector's splitter slot) was implemented first, see
+link:split-view-implementation-handoff.asciidoc[the handoff]. The paired-tab
+model described below is developed separately on
+`feature/split-view-paired-tabs` for comparison.
+
 == Reference behavior
 
 Chromium represents a split as two ordinary tabs linked by a split collection,

@@ -1,259 +1,252 @@
 = Split view MVP: implementation handoff
 
-Status: proposed implementation brief, 2026-11-09. This is a working plan for
-https://github.com/qutebrowser/qutebrowser/issues/1716[issue #1716], not an
-upstream-approved design. Read
-link:split-view-research.asciidoc[the research note] for source links and
-alternatives. The user has posted on the issue and intends to ask on IRC.
-Incorporate maintainer feedback before locking in a public command API.
+Status: implemented on `feature/split-view-mvp` (2026-11-10), working towards
+https://github.com/qutebrowser/qutebrowser/issues/1716[issue #1716]. This is not
+an upstream-approved design. The user has posted on the issue and intends to ask
+on IRC. Incorporate maintainer feedback before locking in a public command API.
+Read link:split-view-research.asciidoc[the research note] for source links and
+the alternatives that were considered.
+
+Two designs were built. This branch contains the light-touch one (*inspector
+pane*). The other (*paired tabs*, see <<alternative,below>>) lives on
+`feature/split-view-paired-tabs` so the two can be compared.
 
 == Product contract
 
-The first version pairs *two already open tabs in the same window* and shows
-their live pages together. A left/right split is `:vsplit`; a top/bottom split
-is `:hsplit`. Each page remains an ordinary tab with its own tab-bar entry,
-history, URL, title, favicon, audio state, and tab ID. The active pane is the
-active tab for commands, URL/status display, key modes, hints, and focus.
-Both pages stay visible while either member is active. Selecting a tab outside
-the pair shows that tab alone; selecting either member shows the pair again.
-The user can resize the divider. Unsplit returns to normal tab display and
-preserves both tabs and their live page state.
+`:vsplit [url]` shows a second page to the right of the current page and
+`:hsplit [url]` shows it below. The second page (the *pane*) is a split inside
+the *same tab*, in the slot the tab's web inspector uses. It is not an extra
+tab: no tab-bar entry, tab index or session entry.
 
-The first PR is limited to two pages in one split. Do not import Chromium UI
-code or the 2018 prototype's pane hierarchy. Do not implement arbitrary tiling,
-nested splits, a second TabbedBrowser per window, or URL-based page cloning.
-Do not load either URL as a side effect of split, unsplit, focus changes, or
-orientation changes. The goal is the Chrome-style pair model, adapted to
-qutebrowser's existing Qt widgets.
+* The pane is a full `AbstractTab`, so it can be browsed, scrolled, searched,
+  and gets hints, zoom and history like any other page.
+* Without a URL the pane loads the current page's URL (a fresh load, not a copy
+  of the page's state or history). Calling `:vsplit`/`:hsplit` again moves the
+  existing pane, and with a URL also navigates it.
+* The two pages share the space equally, the divider can be dragged, and the
+  ratio is kept on resize (the inspector keeps an absolute size instead).
+* `:split-focus` switches focus between page and pane, `:split-close` closes the
+  pane. Clicking a page focuses it. After a command line or prompt, and after
+  leaving the tab and coming back, focus returns to the page which had it.
 
-== Recommended command contract (confirm with upstream)
+=== What "the focused page" means
 
-* `:vsplit <tab>`: put the current tab on the left and the selected existing
-  tab on the right. `<tab>` uses qutebrowser's normal same-window tab selector
-  or 1-based index; add completion using existing tab completion helpers.
-* `:hsplit <tab>`: put the current tab above the selected existing tab.
-* `:split-close` (or `:unsplit`, name to settle): remove pair membership without
-  closing either page. Keep focus on the currently active tab.
-* `:split-focus` (name to settle): switch active tab to the other visible pane.
-  Existing `:tab-focus`, `:tab-next`, and mouse clicks must also select the
-  corresponding pane correctly.
-* Repeating `:vsplit` or `:hsplit` with the same pair changes orientation
-  without recreating pages. A request involving a tab already in another pair
-  should give a clear command error until a deliberate pair-replacement
-  policy is agreed.
+"Focused page" is the pane if it has focus, otherwise the tab's own page
+(`AbstractTab.active_pane()`). Every command falls into one of three groups:
 
-The command names are a proposal. The important semantic requirement is that
-pairing existing tabs is possible from the keyboard. If upstream prefers
-`:split` plus an orientation flag or a no-argument form, change the interface
-before submitting the PR. Do not silently make `:vsplit` reload the active URL.
+*Follows the focused page.* Everything that works on page content or its URL:
+`:open`, `:back`/`:forward`, `:reload`, `:stop`, scrolling, search, zoom, hints,
+`:yank`, `:bookmark-add`, `:quickmark-save`, `:download`, `:view-source`,
+`:edit-url`, `:navigate`, `:devtools`, `:fullscreen`, `:jseval`, userscripts
+(`QUTE_URL`, `QUTE_TITLE`, the page handed to the script), the `{url}` and
+`{title}` command variables, the status bar, and the back/forward indicator.
+`:tab-clone` also clones the focused page, which is a handy way to pop the pane
+out into its own tab.
 
-== Core invariants
+*Always acts on the tab.* `:tab-close`, `:tab-pin`, `:tab-move` and the other tab
+commands. Closing the tab closes its pane. `:tab-give` and `:tab-take` refuse
+(unless `--keep`), because they would silently throw away one of the two pages.
 
-* A tab belongs to at most one pair. Both members are distinct, live tabs in
-  the same window. Membership should use stable tab objects or IDs, never tab
-  indices alone, because insertion and moving change indices.
-* Each member remains addressable by existing tab commands and is counted once
-  by `TabWidget.count()`, `widgets()`, session save, completion, and the tab bar.
-* The selected tab is one member of the displayed pair. The other member is
-  visible but not command-active. At most one pane has keyboard focus.
-* The pair has one orientation and one bounded divider ratio. A change of
-  window size must not leave either pane permanently collapsed.
-* Pair removal never calls `AbstractTab.private_api.shutdown()` or
-  `deleteLater()` on a surviving page. Only normal close paths destroy pages.
-* Ordinary unsplit tabs retain all existing behavior. Adding a split must not
-  change tab indices or command semantics for unrelated tabs.
+*Always acts on the page, not the pane.* Marks (`m`, `'`), and anything which
+calls `TabbedBrowser.load_url(newtab=False)` such as `:config-diff`. Marks mix
+a URL with a scroll position and a later navigation, which makes "follow the
+pane" more intrusive than it's worth, so they stay with the tab's own page.
 
-== Architectural gate: solve ownership first
+== Design
 
-`AbstractTab` is a `QWidget`; `TabWidget` inherits `QTabWidget` and currently
-uses that tab's page widget as the content widget. `QTabWidget`'s internal
-stack shows only one child at a time. A widget cannot simultaneously be a
-page in that stack and a child in a separate `QSplitter`. Reparenting a page
-out of the stack can also break `widget(index)`, `indexOf(tab)`, and lifetime
-assumptions. This is the central integration problem. Merely placing a
-`QSplitter` inside a page will not satisfy the two-existing-tabs contract.
+A pane is created with `browsertab.create()` and put into the owning tab's
+`InspectorSplitter`. State lives on the owner's `TabData`:
 
-Before adding commands or session changes, build a small Qt spike that proves
-one of the following ownership models can maintain the full tab API:
-
-. Keep `QTabWidget` for its tab bar but give each logical tab a placeholder
-  page; store real `AbstractTab` objects in a separate view host. Provide a
-  narrow mapping layer for `widget(index)`, `indexOf(tab)`, `currentWidget()`,
-  `setCurrentWidget()`, insertion, removal, and tab moves. Audit every direct
-  `QTabWidget` call that would bypass the mapping.
-. Replace the page stack with an explicit tab bar plus a one-or-two-view host,
-  while preserving the externally used `TabWidget` facade and signals. This
-  may be cleaner if the placeholder approach requires too many overrides.
-
-Choose based on the spike and explain why in the PR. Keep the presentation
-host responsible only for showing one tab or a pair; let `TabbedBrowser` own
-tab lifecycle and pair state. Use a `QSplitter` around the two *existing*
-`AbstractTab` widgets, including their per-tab inspector wrapper. Preserve
-their `QObject` identity and page identity through all transitions. Test the
-ownership spike with QtWebEngine before doing broad refactoring. The old
-prototype's custom `QTilingLayout` is not needed for a two-page pair.
-
-== Code map and change points
+* `pane`: the pane tab (or `None`)
+* `pane_active`: whether the pane has focus and is the command target
+* `pane_owner` (on the pane tab): the tab it belongs to
 
 [cols="2,4",options="header"]
 |===
-|Area |What to inspect or change
+|Area |Change
 
-|`qutebrowser/mainwindow/tabwidget.py`
-|`TabWidget(QTabWidget)` owns page widgets; custom `TabBar` owns tab drawing,
-titles, icons, drag ordering, and the tab-position config. Preserve its public
-behavior and existing tab styling, including vertical tabs.
+|`qutebrowser/misc/miscwidgets.py`
+|`InspectorSplitter` gets a pane mode: `set_pane()`, `remove_pane()`,
+`has_pane()`, `main_widget()`. The inspector's absolute-size handling and size
+persistence are skipped for a pane, and `cycle_focus()`/`set_inspector()` refuse
+while a pane is shown. `_insert_secondary()` is shared with the inspector.
+
+|`qutebrowser/browser/browsertab.py`
+|The `TabData` fields, `AbstractTab.active_pane()`, and the devtools guard in
+`toggle_inspector()`.
 
 |`qutebrowser/mainwindow/tabbedbrowser.py`
-|`tabopen`, `_remove_tab`, `close_tab`, `widgets`, `_on_current_changed`, undo,
-and `_now_focused` manage identity, focus, and lifetime. Put pair lifecycle
-here or in a small helper owned by it; dissolve before destroying or moving a
-member. `tabopen` currently passes `parent=self.widget` to `browsertab.create`.
-
-|`qutebrowser/browser/commands.py`
-|Add window-scoped commands and use existing tab completion/selection patterns.
-`tab_move`, `tab_give`, and `tab_take` are cross-cutting cases; `tab_give`
-closes the original after opening another window's copy.
+|Pane lifecycle (`open_pane`, `close_pane`, `focus_pane`), focus tracking via
+`QApplication.focusChanged`, destroying the pane with its tab, restoring focus,
+`current_url()`/`current_title()` following the focused page, and
+`_leave_modes_on_switch()` (extracted from `_on_current_changed`, now shared by
+tab and pane switches). The filtered `cur_*` signal connections moved into
+`_connect_filtered_signals()` so the pane reuses them.
 
 |`qutebrowser/browser/signalfilter.py`
-|It forwards current-tab signals by comparing `indexOf(tab)` with
-`currentIndex()`. This should continue to mean the selected pane, even while
-both are visible. Do not forward the inactive pane's URL/status as active.
+|A pane's signals are forwarded while it has focus, the page's are suppressed.
 
-|`qutebrowser/misc/sessions.py`
-|`_save_all` serializes ordinary tabs and `_load_window` reconstructs them.
-Add optional pair metadata only after tabs exist during restore. Preserve old
-session compatibility and ignore invalid metadata safely.
+|`qutebrowser/browser/commands.py`
+|The four commands, routing of `_current_widget()` and `:open`, the `:tab-give`
+and `:tab-take` refusals, and the userscript page.
 
-|`qutebrowser/browser/browsertab.py`, `qutebrowser/misc/miscwidgets.py`
-|`AbstractTab` already wraps its web view in `InspectorSplitter`. Keep that
-wrapper intact when moving the whole tab into the new view host. Check focus,
-full-screen, and inspector interaction.
+|`qutebrowser/utils/objreg.py`, `qutebrowser/commands/command.py`,
+`qutebrowser/commands/runners.py`, `qutebrowser/browser/hints.py`,
+`qutebrowser/mainwindow/statusbar/backforward.py`
+|One- or two-line routing through `active_pane()` / `current_title()`.
 |===
 
-Search for `widget.widget(`, `widget.indexOf(`, `widget.currentWidget()`,
-`insertTab(`, `removeTab(`, `tabBar().moveTab(`, and `setCurrentWidget(`
-before changing the widget facade. Call sites outside the code map matter too.
+`TabWidget` and the tab bar are untouched, so tab indices, tab commands and
+session saving behave as before.
 
-== Lifecycle behavior
+== Known limitations
 
-[cols="2,4",options="header"]
-|===
-|Action |Expected result
+* A tab can't have a pane and docked devtools at once (one shared slot). That
+  includes devtools which were opened and then hidden. Both directions give an
+  error.
+* Panes are not saved in sessions and not restored by `:undo` (only the tab is).
+* One pane per tab, no nesting.
+* The pane has no tab-bar entry: it can't be selected, closed or moved there,
+  and its load progress isn't shown there.
+* Page-initiated full screen from the pane is not handled specially. The window
+  goes full screen, but the pane is expected to fill only its own area. This is
+  untested.
+* Verified offscreen with QtWebEngine only; not on a real X11 or Wayland session
+  and not with QtWebKit.
 
-|Pair two nonadjacent tabs
-|Both become visible without reload. For a Chrome-like tab strip, move the
-target next to the active tab as part of pairing; preserve tab identity and
-emit normal move/selection signals. If this proves invasive, document the
-tradeoff and ask upstream before dropping adjacency.
+== Adversarial review
 
-|Select either paired tab by tab bar, `:tab-focus`, or pane click
-|Both remain visible; selected pane gets focus and drives status, URL,
-commands, and key mode. A mouse click must update the active tab *before*
-subsequent browser commands are routed.
+The first version claimed "page commands act on the focused page". Attacking
+that claim, instead of testing the happy path, found that it was false in
+several ways. All fixed, each with a test which was checked to fail without the
+fix (the fix was removed and the scenario confirmed red):
 
-|Select an unrelated tab, then return
-|Show the unrelated tab alone, then restore both members and divider position.
-Hidden tabs retain page state; no navigation occurs.
+* *`:tab-give` crashed.* It called `close_tab()` with the focused page, and with
+  a pane focused that is the pane, which isn't in the tab bar. It also opened
+  the page in the other window first. Now refused unless `--keep`.
+* *URL based commands used the wrong page.* `:yank`, `:bookmark-add`,
+  `:quickmark-save`, `:download`, `:edit-url`, `:navigate`, `{url}`, userscripts
+  and the `:hint` base URL used the tab's URL while everything else used the
+  pane. `:navigate up` computed a URL from the page and loaded it into the pane.
+  `TabbedBrowser.current_url()` now follows the focused page; `{title}` and
+  `QUTE_TITLE` use `current_title()`. Marks were pinned to the page explicitly.
+* *The status bar could show the wrong tab.* Changing which view has focus
+  emitted `current_tab_changed` even for a tab which isn't shown (for example a
+  background tab's pane closing itself), and switching back to a tab whose pane
+  had focus re-announced the page instead of the pane.
+* *`InspectorSplitter.remove_pane()` corrupted a docked inspector* when called
+  without a pane (found by a randomized test of the slot rules). Not reachable
+  from the commands, but a public method shouldn't do that.
+* The focus handler had no guard for shutdown, and the mode leaving was
+  duplicated between tab and pane switches.
 
-|Open a new foreground or background tab
-|Keep normal tab placement/selection semantics. Opening a foreground tab shows
-it alone; opening a background tab does not steal focus or tear down the pair.
+Also exercised (all pass): chaining `:vsplit ;; split-close ;; :vsplit`, quitting
+with a pane open, opening and closing 15 panes in a row and checking no tab
+objects stay registered, giving/taking tabs with panes, and a randomized test of
+the pane/inspector slot rules with a model of the expected state.
 
-|Close either paired tab (including page-initiated close or renderer crash)
-|Dissolve pair before the normal close path. Survivor remains a valid tab and
-shows alone. Keep existing last-tab and undo behavior; undo need not recreate
-the pair unless upstream requests that explicitly.
+== Decisions and trade-offs
 
-|Move, pin, or detach a member
-|For the first PR, reject pairing a pinned tab with a clear error; dissolving
-an existing pair before pin or cross-window transfer is acceptable. Moving a
-member away from its partner in the tab strip dissolves the pair. Tab dragging
-must follow the same rule as `:tab-move`.
+Each entry gives the choice, the strongest case against it, and why it was kept
+(or what is still unsettled).
 
-|Resize, change orientation, or unsplit
-|Resize adjusts the two live widgets. Orientation/unsplit preserve their page
-objects, navigation state, form state, scroll position, and inspector state.
+*A pane is a full `AbstractTab`, not a bare web view.*
+Against: it isn't a tab, yet it gets a tab id, a registry entry and
+`TabData`, which blurs what "a tab" is. For: hints, search, zoom, history,
+scrolling, downloads and the status bar all expect an `AbstractTab`; a bare
+view would need a parallel implementation of each. Unsettled: whether upstream
+wants to bless "a tab which isn't in the tab bar".
 
-|Enter page full screen
-|Temporarily show only that page; restore the pair, focus, and ratio on exit.
-Do not let the inactive page's full-screen signal replace the active page.
+*`active_pane()` routing at a handful of call sites.*
+Against: every future "current tab" lookup has to remember it, and this review
+found several that had already forgotten (see above). For: the alternative of making
+`TabWidget.currentWidget()` return the pane breaks the tab index identity
+everything else relies on. Mitigation: the three groups above, and tests per
+group. It remains the weakest point of the design.
 
-|Enable `tabs.tabs_are_windows`
-|Two tabs cannot exist in one window under this setting. Commands should fail
-with a clear explanation rather than open a second window or clone a URL.
-|===
+*One global `QApplication.focusChanged` connection per window.*
+Against: hidden global state, and it fires for every focus change in the
+application. For: it returns early unless the current tab has a pane, and a
+per-widget event filter doesn't work because QtWebEngine swaps its focus proxy
+on navigation (the same reason `ChildEventFilter` exists for inspector clicks).
 
-== Session format
+*Sharing the inspector's slot.*
+Against: devtools and a pane exclude each other, including hidden devtools. For:
+it reuses the splitter logic and persistence-free layout with no new widget
+hierarchy. Alternative: nest another splitter; more code for a rare combination.
 
-Recommend optional window-level metadata referencing the two tabs by saved
-position, plus orientation and divider ratio. Keep normal `tabs` entries
-unchanged so older sessions and tools still see ordinary tabs. On restore,
-create all tabs first, then validate references: two distinct in-range tabs,
-same window, supported orientation, sane ratio. Discard malformed pair data
-and keep every tab open. Preserve the selected tab as the active pane. Specify
-the ratio's units and clamp it before passing sizes to Qt. Test a session
-round trip with two independent page histories and an older session without
-split metadata. A single-window save should not reference another window.
+*`inspector.Position` for the pane's side.*
+Against: the name is wrong for a pane. For: it is the type `InspectorSplitter`
+already uses, and a new enum would be near-identical. A rename is cheap if
+requested.
 
-== Delivery plan
+*`:vsplit` without a URL does a fresh load of the current URL.*
+Against: can reload a page with side effects (POST results, one-time links). For:
+simple and predictable, and `:tab-clone` already covers copying history.
 
-. *Ownership spike*: demonstrate two existing `AbstractTab` widgets visible
-  through one view host, with `TabWidget.widget(index)` and `indexOf(tab)`
-  still correct. Add a small temporary or permanent GUI test. Stop and revise
-  the architecture if this fails; do not build commands on a broken facade.
-. *Pair state and display*: add pair/unpair/orientation/selection operations,
-  with invariants and a two-view `QSplitter`. Confirm switching to unrelated
-  tabs and back, resizing, and no page reload.
-. *Commands and lifecycle*: add the agreed command surface and focus routing;
-  cover tab close, move, pin, undo, background tabs, inspector, and fullscreen.
-. *Persistence and polish*: session round trip, invalid-data recovery,
-  documentation, command completion, and keyboard discoverability. Keep the
-  PR reviewable: small focused commits, a clear model diagram, and a short
-  manual demo/screencast if helpful.
+*Refusing `:tab-give`/`:tab-take`.* Against: an error where it could "just work".
+For: moving a tab with two pages means choosing which one survives, and silent
+loss is worse than a message.
 
-If the first PR becomes unreviewably large, split it at a *working* boundary
-(for example, a behavior-neutral tab/view-host refactor followed by the
-feature). Do not submit a partial split that drops live tab identity or breaks
-normal tab behavior merely to reduce diff size.
+*No session persistence, no `:undo` of the pane.* Against: a saved layout is
+lost. For: sessions would need a format and restore-order rules, which is where
+the paired design spent most of its code. Easy to add later, hard to remove.
 
-== Evidence and acceptance checks
+[[alternative]]
+== Alternative: paired tabs
 
-Automated tests should cover the pair model, tab-index mapping, selection,
-close/detach/move behavior, and session serialization. GUI or end-to-end tests
-should confirm that two existing loaded pages are visible and interactive,
-and that form input or in-page state survives split, unsplit, and orientation
-changes. A URL equality assertion alone does not prove absence of reload.
-Track page load signals or a JavaScript counter stored in page state.
+The original plan paired two *existing* tabs, each keeping its own tab-bar entry,
+history and tab id, like Chrome does. `QTabWidget`'s page stack can only show one
+page, so `TabWidget` has to stop using it. That is built on
+`feature/split-view-paired-tabs`: a first commit makes `TabWidget` a facade over
+a `ViewHost` splitter (tabs are never reparented), then pairs, commands, focus
+and sessions on top.
 
-Manual smoke test on QtWebEngine with a temporary profile:
+Measured (production / tests / docs, lines added) when both were first working:
+pane about +310 / +365 / +51, paired about +692 / +1479 / +48, the paired figure
+including roughly 300 production lines for the `TabWidget` rewrite.
 
-. Open two pages, type into a form on each, split, resize, switch active pane
-  by mouse and keyboard, and verify both form values remain.
-. Navigate each pane independently; verify URL, status, commands, hints, and
-  tab title follow the selected pane.
-. Select an unrelated tab and return; unsplit; close each side in separate
-  runs; use `:undo`; inspect a page; try fullscreen.
-. Save and restore a named session; confirm both tabs, orientation, active
-  pane, and ratio return. Load a pre-feature session and malformed metadata.
-. Repeat the core view/focus smoke test on X11 and QtWebKit where available;
-  report unavailable combinations accurately rather than implying coverage.
+* Paired tabs give each page a real tab identity: commands, hints, status bar,
+  sessions and undo need no routing, and devtools don't conflict.
+* They rewrite the base of a central class and couple tab selection to pane
+  focus. A latent bug of the rewrite (`tabopen()` showing background tabs)
+  survived the original tests of the "behavior-neutral" first commit.
+* The pane is far smaller and leaves `TabWidget` alone, at the price of the
+  routing above and the second page not being a tab.
 
-Run focused existing tests for touched areas and the repository's documented
-linters/checks. The PR description should link #1716, describe the chosen
-ownership model, show the behavior contract, list tested backends/platforms,
-and call out any known limitations. Do not claim upstream approval until a
-maintainer actually gives it.
+My recommendation is the pane first, and paired tabs only if upstream asks for
+Chrome-style tab pairs.
 
-== Handoff instruction for an implementation agent
+== Tests
 
-Implement the MVP in this checkout on `feature/split-view-mvp`. Read this file
-and `doc/split-view-research.asciidoc` first. Inspect current code before
-editing. Start with the ownership spike and report the architecture choice
-and why it works with existing `TabWidget` APIs. Then implement the behavior
-contract and tests, preserving live page objects. Use the user's posted issue
-comment and any later upstream reply to resolve command naming and scope.
-Prepare a reviewable branch/PR draft, but do not open an upstream PR or post
-messages to GitHub or IRC without the user's authorization. At handoff,
-report files changed, tests run, observed GUI behavior, known limitations,
-and any upstream questions still open.
+* Unit: `tests/unit/misc/test_miscwidgets.py` (pane mode and a randomized slot
+  test), `tests/unit/browser/test_signalfilter.py`,
+  `tests/unit/browser/test_browsertab.py` (`active_pane()`).
+* End-to-end: `tests/end2end/features/split.feature`. Helper steps inspect real
+  widgets (layout, status bar text, tab registry), not only the log.
+
+Run headless with
+`QT_QPA_PLATFORM=offscreen QTWEBENGINE_CHROMIUM_FLAGS="--no-sandbox --disable-gpu"`.
+In end-to-end scenarios raw commands need full URLs (`http://localhost:(port)/...`,
+otherwise the argument is searched), commands chained with `;;` take no leading
+colon after the first, and URL based commands need the pane to have loaded first.
+
+Manual smoke test (temporary profile, `--temp-basedir`):
+
+. Open a page, `:vsplit <url>`; both pages show side by side. Drag the divider,
+  resize the window.
+. Click each page; `:open`, `:back`, `:yank`, scrolling and hints act on the
+  clicked one, and the status bar follows.
+. `:split-focus` both ways; run `:` commands and confirm focus returns to the
+  page you were on.
+. Switch to another tab and back; `:hsplit` to move the pane; `:split-close`.
+. Close the tab with the pane open; try `:devtools`, `:tab-give`.
+
+== Questions for upstream
+
+* Is a second page inside a tab (pane) acceptable as a first version, or are
+  paired tabs wanted?
+* Command naming (`:vsplit`/`:hsplit` vs `:split` with options), and whether a
+  pane should be persisted in sessions.
+* Is sharing the inspector's slot acceptable, or should a pane coexist with the
+  devtools?
