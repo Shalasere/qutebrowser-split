@@ -1,0 +1,157 @@
+= Two-page split view: implementation research
+
+Status: design research, 2026-11-09. This note is for a focused first PR based on
+upstream issue https://github.com/qutebrowser/qutebrowser/issues/1716[#1716].
+It proposes two independently navigable existing tabs shown together in one
+window, with horizontal or vertical orientation. It does not propose arbitrary
+pane trees.
+
+== Reference behavior
+
+Chromium represents a split as two ordinary tabs linked by a split collection,
+with layout and ratio attached to that collection. The active tab determines
+toolbar state while both tabs remain foreground content. Its separate
+`MultiContentsView` renders up to two web views and handles sizing, focus, and
+the active border. This separation between tab identity and presentation is
+the important part to copy, not Chromium's C++ classes or UI chrome.
+
+* https://chromium.googlesource.com/chromium/src/+/HEAD/chrome/browser/ui/tabs/tab_strip_model.cc[Chromium TabStripModel]
+* https://chromium.googlesource.com/chromium/src/+/main/chrome/browser/ui/views/frame/multi_contents_view.cc[Chromium MultiContentsView]
+* https://support.google.com/chrome/answer/16971124[Chrome split-view behavior]
+
+Vivaldi supports more than two tiles and arbitrary layouts. Its behavior is a
+useful later reference, but implementing it now would force a general tiling
+tree and enlarge the first PR.
+
+* https://help.vivaldi.com/desktop/tabs/tab-tiling/[Vivaldi tab tiling]
+
+== qutebrowser and engine constraints
+
+qutebrowser's `AbstractTab` is already a QWidget that wraps either a
+`QWebEngineView` or a `QWebView`. It carries tab identity, history, signals,
+and an existing per-tab `InspectorSplitter`. A display container can therefore
+hold whole `AbstractTab` objects without changing either rendering engine or
+creating fresh pages. This is important: moving or cloning URLs would reload
+pages and lose live state.
+
+QtWebEngine contains Chromium's rendering engine, but not the Chrome browser
+UI or its split-tab model. A Chromium feature flag cannot supply this feature
+to qutebrowser. QtWebKit is a legacy, discouraged backend; using only QWidget
+containers gives it the same split behavior without backend-specific code.
+
+* `qutebrowser/browser/browsertab.py`: `AbstractTab` and its widget wrapper
+* `qutebrowser/misc/miscwidgets.py`: existing `InspectorSplitter`
+* https://doc.qt.io/qt-6/qtwebengine-overview.html[Qt WebEngine architecture]
+* https://qutebrowser.org/doc/help/settings.html#backend[qutebrowser backend guidance]
+
+The present `TabWidget(QTabWidget)` stores one `AbstractTab` per index. Its
+internal stacked page area shows one widget at a time. `TabbedBrowser`, the
+command dispatcher, signal filtering, and sessions assume that a tab index
+maps directly to one web view. A two-view implementation must preserve that
+logical mapping while decoupling it from the displayed page container.
+
+* `qutebrowser/mainwindow/tabwidget.py`: `TabWidget`
+* `qutebrowser/mainwindow/tabbedbrowser.py`: tab lifecycle and active tab
+* `qutebrowser/browser/signalfilter.py`: current-tab signal filtering
+* `qutebrowser/misc/sessions.py`: tab and window session format
+* https://doc.qt.io/qt-6/qtabwidget.html[QTabWidget]
+* https://doc.qt.io/qt-6/qsplitter.html[QSplitter]
+
+== Considered implementations
+
+[cols="1,3,3",options="header"]
+|===
+|Method |Benefit |Problem
+
+|Pair existing tabs, use a separate two-view container
+|Preserves tab IDs, histories, page state, and Chromium-like behavior. Works
+with both rendering backends.
+|Requires tab model and display changes because QTabWidget's page stack assumes
+one visible page.
+
+|Put multiple new panes inside one tab, as the 2018 prototype did
+|Leaves one tab-bar entry and can grow into arbitrary tiling.
+|Requires a new pane identity throughout the browser and changes the meaning
+of tab commands. The prototype copied the current URL into a new pane rather
+than pairing two existing live tabs.
+
+|Two TabbedBrowser instances in one main window
+|Can render two existing widgets with little layout work.
+|Window-scoped command registry, mode manager, status bar, and session handling
+assume one TabbedBrowser per window. This duplicates and conflicts with those
+responsibilities.
+
+|Inject an iframe or use a Chromium switch
+|Little qutebrowser UI work.
+|An iframe is not an independent tab and is blocked by many sites. QtWebEngine
+does not include Chrome's browser UI.
+|===
+
+The 2018 branch at
+https://github.com/lufte/qutebrowser/tree/1716-20180930[1716-20180930]
+changed 24 files and added a general `QTilingLayout` plus separate pane and tab
+types. It is valuable for command and focus ideas, but its architecture is
+larger than the proposed two-tab first version.
+
+== Proposed first-version model
+
+* Keep every `AbstractTab` in the tab strip and in the existing tab registry.
+  A split is an optional pair of tab IDs in one window plus orientation and
+  divider ratio. Both members remain adjacent in the tab strip.
+* Keep one active tab index. When either member is selected, show both tabs;
+  the selected member receives keyboard focus and controls URL, status,
+  commands, hints, and page-specific UI. Selecting an unrelated tab hides the
+  split together.
+* Use a `QSplitter` for the displayed pair. Reparent the existing tab widgets
+  within the same window; never call `load_url` as part of splitting or
+  unsplitting. A click into the inactive view must select that tab before
+  commands run.
+* Replace or separate QTabWidget's stacked content area so the tab bar can
+  select either of two views without hiding its partner. The tab bar can remain
+  qutebrowser's existing custom `TabBar`.
+* Start with commands to split the active tab with another existing tab,
+  unsplit, switch focus between sides, and change orientation. A new blank
+  second tab is convenient, but pairing existing tabs is essential.
+* Closing either member dissolves the pair and preserves the survivor. Moving
+  a member to another window dissolves it first. A page's own close request
+  applies only to that page. Pinned-tab behavior needs an explicit policy.
+* Persist pair membership, orientation, and ratio in sessions. Older session
+  files must continue loading as ordinary tabs; corrupt or missing partners
+  must degrade to ordinary tabs rather than fail the window restore.
+* Treat page fullscreen as temporarily single-view and restore the pair on
+  exit. The existing in-tab inspector should remain nested inside its page.
+
+Qt's QWidget reparenting within one window should preserve the page object,
+but visibility and focus changes need an actual QtWebEngine smoke test on
+Wayland and X11. The current `InspectorSplitter` is a useful precedent for
+rendering and resizing two QWidget children.
+
+== PR-sized sequence and evidence
+
+. Introduce a small pair model with invariants: at most two members; same
+  window; adjacent; distinct IDs; one active member; valid ratio.
+. Decouple tab selection from content visibility, then render one normal tab
+  or one split pair. Keep all existing tab indices and commands working.
+. Add commands and focus handling, including keyboard and mouse activation.
+. Handle close, move, undo, fullscreen, and the inspector.
+. Extend session save and restore with backwards-compatible split metadata.
+. Add focused unit tests for pair lifecycle and session round trips, plus
+  end-to-end tests for two visible live pages, focus routing, and no reload on
+  split/unsplit. Run the same GUI scenario with both backends where available.
+
+The largest review risk is replacing QTabWidget behavior while preserving
+current tab-bar styling and keyboard semantics. A small design comment on
+#1716 before a large PR would let maintainers react to the pair model and
+avoid spending time on a design they will reject.
+
+Questions to settle with upstream before implementation grows:
+
+* Should both paired pages retain separate tab-bar entries, as in Chromium,
+  or should the pair appear as one tab? This note recommends separate entries.
+* Should the first PR permit pinned tabs in a pair? Disallowing them initially
+  avoids ambiguous tab order and close behavior.
+* Should a split survive session restore in the first PR? This note recommends
+  yes, because a saved session otherwise changes the user's browsing layout.
+* Should `:split` create a new blank tab, pair with a selected existing tab,
+  or accept both forms? The command naming and completion should be decided
+  before a public interface is introduced.
