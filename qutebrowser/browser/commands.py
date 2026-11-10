@@ -528,6 +528,9 @@ class CommandDispatcher:
             raise cmdutils.CommandError("Can't take a tab from the same "
                                         "window")
 
+        if tab.data.pane is not None and not keep:
+            raise cmdutils.CommandError("Can't take a tab with a split pane")
+
         self._open(tab.url(), tab=True)
         if not keep:
             tabbed_browser.close_tab(tab, add_undo=False, transfer=True)
@@ -556,6 +559,11 @@ class CommandDispatcher:
 
         if win_id == self._win_id:
             raise cmdutils.CommandError("Can't give a tab to the same window")
+
+        tab = self._cntwidget()
+        if tab is not None and tab.data.pane is not None and not keep:
+            # The pane would be lost silently.
+            raise cmdutils.CommandError("Can't give a tab with a split pane")
 
         if win_id is None:
             if self._count() < 2 and not keep:
@@ -1244,11 +1252,12 @@ class CommandDispatcher:
         idx = self._tabbed_browser.widget.currentIndex()
         if idx != -1:
             env['QUTE_TAB_INDEX'] = str(idx + 1)
-            env['QUTE_TITLE'] = self._tabbed_browser.widget.page_title(idx)
+            env['QUTE_TITLE'] = self._tabbed_browser.current_title()
 
         tab = self._tabbed_browser.widget.currentWidget()
         if tab is None:
             raise cmdutils.CommandError("No current tab!")
+        tab = tab.active_pane()
 
         try:
             url = self._tabbed_browser.current_url()

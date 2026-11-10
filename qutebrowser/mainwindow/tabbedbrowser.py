@@ -415,15 +415,31 @@ class TabbedBrowser(QWidget):
         return tab
 
     def current_url(self):
-        """Get the URL of the current tab.
+        """Get the URL of the focused page (the split pane or the current tab).
 
         Intended to be used from command handlers.
 
         Return:
             The current URL as QUrl.
         """
-        idx = self.widget.currentIndex()
-        return self.widget.tab_url(idx)
+        tab = self.widget.currentWidget()
+        assert tab is None or isinstance(tab, browsertab.AbstractTab), tab
+        url = QUrl() if tab is None else tab.active_pane().url()
+        qtutils.ensure_valid(url)
+        return url
+
+    def _current_tab_url(self):
+        """Get the URL of the current tab's page, even if a pane has focus."""
+        return self.widget.tab_url(self.widget.currentIndex())
+
+    def current_title(self):
+        """Get the title of the focused page (see current_url)."""
+        tab = self.widget.currentWidget()
+        assert tab is None or isinstance(tab, browsertab.AbstractTab), tab
+        page = None if tab is None else tab.active_pane()
+        if page is None or page is tab:
+            return self.widget.page_title(self.widget.currentIndex())
+        return page.title() or page.url().toDisplayString()
 
     def shutdown(self):
         """Try to shut down all tabs cleanly."""
@@ -859,21 +875,20 @@ class TabbedBrowser(QWidget):
         self.widget.update_tab_favicon(tab)
 
     def open_pane(self, tab, url, position):
-        """Show a split pane next to the page of tab, or move an existing one.
+        """Show a split pane next to the page of tab, or move the existing one.
 
         A pane is a regular tab which isn't in the tab bar. It lives in the
-        InspectorSplitter slot of the tab it belongs to, and is destroyed with
-        that tab.
+        InspectorSplitter of the tab it belongs to and is destroyed with it.
 
         Args:
             tab: The tab to add the pane to.
             url: The QUrl to load in the pane, or None to keep its page.
-            position: An inspector.Position (the side of the pane).
+            position: An inspector.Position, the side of the page to put it on.
         """
         splitter = tab.data.splitter
         assert splitter is not None
         pane = tab.data.pane
-        is_new = pane is None
+        created = pane is None
         if pane is None:
             pane = browsertab.create(win_id=self._win_id,
                                      private=self.is_private)
@@ -882,7 +897,7 @@ class TabbedBrowser(QWidget):
         try:
             splitter.set_pane(pane, position)
         except inspector.Error:
-            if is_new:
+            if created:
                 self._destroy_pane(pane)
             raise
         log.webview.debug(f"Showing pane {pane!r} {position.name} of {tab!r}")
@@ -931,26 +946,24 @@ class TabbedBrowser(QWidget):
         pane.deleteLater()
 
     def _set_pane_active(self, tab, active):
-        """Make commands act on the pane (or page) of tab."""
+        """Make commands act on the pane (or the page) of tab."""
         if tab.data.pane_active == active:
             return
         tab.data.pane_active = active
-
-        # Like when switching tabs
-        for mode in [usertypes.KeyMode.hint, usertypes.KeyMode.caret]:
-            modeman.leave(self._win_id, mode, 'pane focus changed', maybe=True)
-        if config.val.tabs.mode_on_change == 'normal':
-            for mode in modeman.INPUT_MODES:
-                modeman.leave(self._win_id, mode, 'pane focus changed',
-                              maybe=True)
+        is_current = tab is self.widget.currentWidget()
+        if not is_current:
+            # Not shown right now, _on_current_changed handles it later.
+            return
+        self._leave_modes_on_switch('pane focus changed')
         self.current_tab_changed.emit(tab.active_pane())
 
     @pyqtSlot(QWidget, QWidget)
     def _on_focus_changed(self, _old, new):
         """Track whether the page or the split pane has focus."""
         tab = self.widget.currentWidget()
-        if (not isinstance(tab, browsertab.AbstractTab) or
-                tab.data.pane is None or new is None):
+        if (self.is_shutting_down or new is None or
+                not isinstance(tab, browsertab.AbstractTab) or
+                tab.data.pane is None):
             return
         assert tab.data.splitter is not None
         main = tab.data.splitter.main_widget()
@@ -1016,6 +1029,14 @@ class TabbedBrowser(QWidget):
         assert isinstance(widget, browsertab.AbstractTab), widget
         widget.data.input_mode = usertypes.KeyMode.normal
 
+    def _leave_modes_on_switch(self, reason):
+        """Leave the modes which shouldn't carry over to another tab or pane."""
+        modes_to_leave = [usertypes.KeyMode.hint, usertypes.KeyMode.caret]
+        if config.val.tabs.mode_on_change == 'normal':
+            modes_to_leave += modeman.INPUT_MODES
+        for mode in modes_to_leave:
+            modeman.leave(self._win_id, mode, reason, maybe=True)
+
     @pyqtSlot(int)
     def _on_current_changed(self, idx):
         """Add prev tab to stack and leave hinting mode when focus changed."""
@@ -1033,16 +1054,11 @@ class TabbedBrowser(QWidget):
         log.modes.debug("Current tab changed, focusing {!r}".format(tab))
         tab.active_pane().setFocus()
 
-        modes_to_leave = [usertypes.KeyMode.hint, usertypes.KeyMode.caret]
-
         mm_instance = modeman.instance(self._win_id)
         current_mode = mm_instance.mode
         log.modes.debug("Mode before tab change: {} (mode_on_change = {})"
                         .format(current_mode.name, mode_on_change))
-        if mode_on_change == 'normal':
-            modes_to_leave += modeman.INPUT_MODES
-        for mode in modes_to_leave:
-            modeman.leave(self._win_id, mode, 'tab changed', maybe=True)
+        self._leave_modes_on_switch('tab changed')
         if (mode_on_change == 'restore' and
                 current_mode not in modeman.PROMPT_MODES):
             modeman.enter(self._win_id, tab.data.input_mode, 'restore')
@@ -1051,7 +1067,7 @@ class TabbedBrowser(QWidget):
         log.modes.debug("Mode after tab change: {} (mode_on_change = {})"
                         .format(current_mode.name, mode_on_change))
         self._now_focused = tab
-        self.current_tab_changed.emit(tab)
+        self.current_tab_changed.emit(tab.active_pane())
         self.cur_search_match_changed.emit(tab.search.match)
         QTimer.singleShot(0, self._update_window_title)
         self._tab_insert_idx_left = self.widget.currentIndex()
@@ -1209,7 +1225,9 @@ class TabbedBrowser(QWidget):
         """
         # strip the fragment as it may interfere with scrolling
         try:
-            url = self.current_url().adjusted(QUrl.UrlFormattingOption.RemoveFragment)
+            # Marks always belong to the page, not to a split pane.
+            url = self._current_tab_url().adjusted(
+                QUrl.UrlFormattingOption.RemoveFragment)
         except qtutils.QtValueError:
             # show an error only if the mark is not automatically set
             if key != "'":
@@ -1232,7 +1250,8 @@ class TabbedBrowser(QWidget):
         """
         try:
             # consider urls that differ only in fragment to be identical
-            urlkey = self.current_url().adjusted(QUrl.UrlFormattingOption.RemoveFragment)
+            urlkey = self._current_tab_url().adjusted(
+                QUrl.UrlFormattingOption.RemoveFragment)
         except qtutils.QtValueError:
             urlkey = None
 

@@ -3,11 +3,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import logging
+from unittest import mock
 
 from qutebrowser.qt.core import Qt, QSize
 from qutebrowser.qt.widgets import QWidget
 import pytest
+import hypothesis
+from hypothesis import strategies
 
+from qutebrowser.config import configfiles
 from qutebrowser.misc import miscwidgets
 from qutebrowser.browser import inspector
 
@@ -285,6 +289,13 @@ class TestInspectorSplitter:
         assert not splitter.has_pane()
         assert splitter.count() == 1
 
+    def test_remove_missing_pane_keeps_the_inspector(
+            self, splitter, fake_inspector, fake_webview):
+        splitter.set_inspector(fake_inspector, inspector.Position.left)
+        splitter.remove_pane()
+        assert splitter.count() == 2
+        assert splitter.main_widget() is fake_webview
+
     def test_slot_is_free_after_removing_the_pane(self, splitter, fake_pane,
                                                   fake_inspector):
         splitter.set_pane(fake_pane, inspector.Position.right)
@@ -392,3 +403,62 @@ class TestInspectorSplitter:
 
         assert (inspector_size, main_size) == (exp_inspector_size,
                                                exp_main_size)
+
+
+_POSITIONS = [inspector.Position.left, inspector.Position.right,
+              inspector.Position.top, inspector.Position.bottom]
+
+
+@hypothesis.given(strategies.lists(
+    strategies.tuples(
+        strategies.sampled_from(['pane', 'other pane', 'inspector',
+                                 'remove pane', 'cycle focus']),
+        strategies.sampled_from(_POSITIONS)),
+    max_size=30))
+def test_pane_and_inspector_slot_invariants(qapp, operations):
+    """Whatever happens, the pane and inspector never share the splitter."""
+    # Not state_config: hypothesis doesn't allow function-scoped fixtures
+    with mock.patch.object(configfiles, 'state', {'inspector': {}}):
+        _run_slot_operations(operations)
+
+
+def _run_slot_operations(operations):
+    main = QWidget()
+    splitter = miscwidgets.InspectorSplitter(win_id=0, main_webview=main)
+    pane = QWidget()
+    inspector_widget = QWidget()  # A tab only ever has one inspector
+    occupant = None  # None, 'pane' or 'inspector'
+
+    for operation, position in operations:
+        if operation == 'pane':
+            if occupant == 'inspector':
+                with pytest.raises(inspector.Error):
+                    splitter.set_pane(pane, position)
+            else:
+                splitter.set_pane(pane, position)
+                occupant = 'pane'
+        elif operation == 'other pane':
+            if occupant is not None:
+                with pytest.raises(inspector.Error):
+                    splitter.set_pane(QWidget(), position)
+        elif operation == 'inspector':
+            if occupant == 'pane':
+                with pytest.raises(inspector.Error):
+                    splitter.set_inspector(inspector_widget, position)
+            else:
+                splitter.set_inspector(inspector_widget, position)
+                occupant = 'inspector'
+        elif operation == 'remove pane':
+            splitter.remove_pane()
+            if occupant == 'pane':
+                occupant = None
+        else:
+            with pytest.raises(inspector.Error):
+                splitter.cycle_focus()
+
+        assert splitter.has_pane() == (occupant == 'pane')
+        assert splitter.main_widget() is main
+        if occupant == 'pane':
+            assert pane.parentWidget() is splitter
+        else:
+            assert pane.parentWidget() is not splitter

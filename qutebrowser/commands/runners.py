@@ -60,7 +60,7 @@ def _init_variable_replacements() -> Mapping[str, _ReplacementFunction]:
         'url:query': lambda tb: _url(tb).query(),
         'url:yank': lambda tb: urlutils.get_url_yank_text(_url(tb),
                                                           pretty=False),
-        'title': lambda tb: tb.widget.page_title(tb.widget.currentIndex()),
+        'title': lambda tb: tb.current_title(),
         'clipboard': lambda _: utils.get_clipboard(),
         'primary': lambda _: utils.get_clipboard(selection=True),
     }

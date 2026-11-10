@@ -347,7 +347,10 @@ class InspectorSplitter(QSplitter):
 
     def _insert_secondary(self, widget: QWidget,
                           position: inspector.Position) -> None:
-        """Put a widget (inspector or pane) next to the main webview."""
+        """Put a widget (inspector or pane) next to the main webview.
+
+        Note _inspector_idx is the index of this slot, whatever it holds.
+        """
         assert position != inspector.Position.window
 
         if position in [inspector.Position.right, inspector.Position.bottom]:
@@ -380,6 +383,7 @@ class InspectorSplitter(QSplitter):
 
     def main_widget(self) -> QWidget | None:
         """Get the main webview widget."""
+        # _main_idx is None as long as nothing is next to it.
         return self.widget(self._main_idx or 0)
 
     def set_pane(self, pane: QWidget, position: inspector.Position) -> None:
@@ -400,17 +404,20 @@ class InspectorSplitter(QSplitter):
     def remove_pane(self) -> None:
         """Take the split pane out of the layout; the caller destroys it.
 
-        The pane is reparented right away (rather than waiting for its
-        deletion), so the slot is free again immediately.
+        The pane is reparented right away instead of waiting for its deletion,
+        so the slot can be used again within the same event loop run (e.g.
+        `:split-close ;; :vsplit`).
         """
         pane = self._pane
+        if pane is None:
+            # Don't touch the bookkeeping of a docked inspector.
+            return
         self._pane = None
         self._main_idx = None
         self._inspector_idx = None
         self._position = None
-        if pane is not None:
-            pane.hide()
-            pane.setParent(qtutils.QT_NONE)
+        pane.hide()
+        pane.setParent(qtutils.QT_NONE)
 
     def _save_preferred_size(self) -> None:
         """Save the preferred size of the inspector widget."""
