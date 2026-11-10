@@ -187,3 +187,207 @@ class TestTabWidget:
         widget.addTab(fake_web_tab(), 'foobar')
         tab_bar = widget.tabBar()
         benchmark(functools.partial(tab_bar._tab_pinned, 0))
+
+
+class TestTabApi:
+
+    """Tests for the QTabWidget-compatible tab API of TabWidget.
+
+    The tab widgets are owned and displayed by the TabWidget's ViewHost, so
+    the index <-> tab mapping is done by TabWidget and has to stay correct
+    when tabs are inserted, moved and removed.
+    """
+
+    @pytest.fixture
+    def widget(self, qtbot, monkeypatch, config_stub):
+        w = tabwidget.TabWidget(0)
+        qtbot.add_widget(w)
+        monkeypatch.setattr(tabwidget.objects, 'backend',
+                            usertypes.Backend.QtWebKit)
+        w.resize(800, 600)
+        w.show()
+        qtbot.wait_exposed(w)
+        return w
+
+    @pytest.fixture
+    def tabs(self, widget, fake_web_tab):
+        result = [fake_web_tab(tab_id=i) for i in range(4)]
+        for i, tab in enumerate(result):
+            widget.addTab(tab, f'tab{i}')
+        return result
+
+    def test_empty(self, widget):
+        assert widget.count() == 0
+        assert widget.currentIndex() == -1
+        assert widget.currentWidget() is None
+        assert widget.widget(0) is None
+
+    def test_add_tab_returns_index(self, widget, fake_web_tab):
+        assert widget.addTab(fake_web_tab(), 'one') == 0
+        assert widget.addTab(fake_web_tab(), 'two') == 1
+
+    def test_mapping(self, widget, tabs):
+        assert widget.count() == 4
+        for i, tab in enumerate(tabs):
+            assert widget.widget(i) is tab
+            assert widget.indexOf(tab) == i
+
+    @pytest.mark.parametrize('idx', [-1, 4, 100])
+    def test_widget_out_of_range(self, widget, tabs, idx):
+        assert widget.widget(idx) is None
+
+    def test_index_of_unknown_widget(self, widget, tabs, fake_web_tab):
+        assert widget.indexOf(fake_web_tab()) == -1
+        assert widget.indexOf(None) == -1
+
+    def test_first_tab_becomes_current(self, widget, tabs):
+        assert widget.currentIndex() == 0
+        assert widget.currentWidget() is tabs[0]
+
+    def test_insert_in_the_middle(self, widget, tabs, fake_web_tab):
+        new = fake_web_tab()
+        assert widget.insertTab(1, new, 'new') == 1
+        order = [tabs[0], new, tabs[1], tabs[2], tabs[3]]
+        assert [widget.widget(i) for i in range(5)] == order
+        assert [widget.indexOf(tab) for tab in order] == list(range(5))
+
+    @pytest.mark.parametrize('idx', [-1, 99])
+    def test_insert_out_of_range_appends(self, widget, tabs, fake_web_tab, idx):
+        new = fake_web_tab()
+        assert widget.insertTab(idx, new, 'new') == 4
+        assert widget.widget(4) is new
+
+    def test_insert_before_current_keeps_current_tab(self, widget, tabs,
+                                                     fake_web_tab):
+        widget.setCurrentIndex(2)
+        widget.insertTab(0, fake_web_tab(), 'new')
+        assert widget.currentIndex() == 3
+        assert widget.currentWidget() is tabs[2]
+        assert tabs[2].isVisible()
+
+    def test_insert_with_icon(self, widget, fake_web_tab):
+        pixmap = QPixmap(16, 16)
+        pixmap.fill()
+        tab = fake_web_tab()
+        widget.insertTab(0, tab, QIcon(pixmap), 'with icon')
+        assert not widget.tabBar().tabIcon(0).isNull()
+        assert widget.page_title(0) == 'with icon'
+
+    def test_tab_move_keeps_mapping(self, widget, tabs):
+        widget.tabBar().moveTab(0, 2)
+        order = [tabs[1], tabs[2], tabs[0], tabs[3]]
+        assert [widget.widget(i) for i in range(4)] == order
+        assert [widget.indexOf(tab) for tab in order] == list(range(4))
+
+    def test_current_tab_follows_a_move(self, widget, tabs):
+        widget.setCurrentIndex(0)
+        widget.tabBar().moveTab(0, 3)
+        assert widget.currentIndex() == 3
+        assert widget.currentWidget() is tabs[0]
+        assert tabs[0].isVisible()
+
+    def test_set_current_widget(self, widget, tabs):
+        widget.setCurrentWidget(tabs[2])
+        assert widget.currentIndex() == 2
+
+    def test_only_current_tab_is_visible(self, widget, tabs, qtbot):
+        widget.setCurrentIndex(1)
+        qtbot.wait_until(lambda: tabs[1].width() > 50, timeout=2000)
+        assert [tab.isVisible() for tab in tabs] == [False, True, False, False]
+        widget.setCurrentIndex(3)
+        qtbot.wait_until(lambda: tabs[3].width() > 50, timeout=2000)
+        assert [tab.isVisible() for tab in tabs] == [False, False, False, True]
+
+    def test_tab_fills_available_space(self, widget, tabs, qtbot):
+        qtbot.wait_until(lambda: tabs[0].width() > 50, timeout=2000)
+        assert tabs[0].width() == widget.width()
+        assert tabs[0].height() == widget.height() - widget.tabBar().height()
+
+    def test_tabs_are_never_reparented(self, widget, tabs, fake_web_tab):
+        widget.setCurrentIndex(2)
+        widget.tabBar().moveTab(0, 3)
+        widget.insertTab(0, fake_web_tab(), 'new')
+        assert all(widget.view_host is tab.parentWidget() for tab in tabs)
+
+    def test_remove_tab(self, widget, tabs):
+        widget.removeTab(1)
+        assert widget.count() == 3
+        assert [widget.widget(i) for i in range(3)] == [
+            tabs[0], tabs[2], tabs[3]]
+        assert widget.indexOf(tabs[1]) == -1
+        assert not tabs[1].isVisible()
+        # Like QTabWidget, we don't destroy or reparent it
+        assert tabs[1].parentWidget() is widget.view_host
+
+    def test_remove_invalid_index(self, widget, tabs):
+        widget.removeTab(99)
+        widget.removeTab(-1)
+        assert widget.count() == 4
+
+    def test_remove_current_tab_shows_another(self, widget, tabs, qtbot):
+        widget.setCurrentIndex(1)
+        widget.removeTab(1)
+        current = widget.currentWidget()
+        assert current is not None
+        assert current is not tabs[1]
+        qtbot.wait_until(lambda: current.width() > 50, timeout=2000)
+        assert [tab.isVisible() for tab in tabs if tab is not tabs[1]
+                ] == [tab is current for tab in tabs if tab is not tabs[1]]
+
+    def test_remove_tab_before_current_keeps_current_tab(self, widget, tabs):
+        widget.setCurrentIndex(3)
+        widget.removeTab(0)
+        assert widget.currentIndex() == 2
+        assert widget.currentWidget() is tabs[3]
+        assert tabs[3].isVisible()
+
+    def test_remove_all_tabs(self, widget, tabs):
+        for _ in range(4):
+            widget.removeTab(0)
+        assert widget.count() == 0
+        assert widget.currentWidget() is None
+        assert not any(tab.isVisible() for tab in tabs)
+
+    def test_current_changed_is_emitted_after_the_tab_is_shown(
+            self, widget, tabs):
+        """TabbedBrowser focuses the new tab in a currentChanged slot."""
+        seen = []
+
+        def on_changed(idx):
+            seen.append((idx, tabs[idx].isVisible(), tabs[0].isVisible()))
+
+        widget.currentChanged.connect(on_changed)
+        widget.setCurrentIndex(2)
+        assert seen == [(2, True, False)]
+
+    def test_signal_order_matches_qtabwidget(self, widget, tabs):
+        """currentChanged (TabbedBrowser) comes before tab_index_changed."""
+        order = []
+        widget.currentChanged.connect(lambda _idx: order.append('current'))
+        widget.tab_index_changed.connect(
+            lambda _idx, _count: order.append('index'))
+        widget.setCurrentIndex(1)
+        assert order == ['current', 'index']
+
+    def test_tab_close_requested_is_forwarded(self, widget, tabs, qtbot):
+        with qtbot.wait_signal(widget.tabCloseRequested) as blocker:
+            widget.tabBar().tabCloseRequested.emit(2)
+        assert blocker.args == [2]
+
+    @pytest.mark.parametrize('position, check', [
+        ('top', lambda bar, host: bar.geometry().bottom() <= host.y()),
+        ('bottom', lambda bar, host: host.geometry().bottom() <= bar.y()),
+        ('left', lambda bar, host: bar.geometry().right() <= host.x()),
+        ('right', lambda bar, host: host.geometry().right() <= bar.x()),
+    ])
+    def test_tab_position(self, widget, tabs, config_stub, qtbot,
+                          position, check):
+        # Use pixel width so we don't need to mock main-window
+        config_stub.val.tabs.width = 50
+        config_stub.val.tabs.position = position
+        bar = widget.tabBar()
+        qtbot.wait_until(lambda: check(bar, widget.view_host), timeout=2000)
+        assert bar.vertical == (position in ['left', 'right'])
+        # The displayed tab still fills the host.
+        qtbot.wait_until(
+            lambda: tabs[0].size() == widget.view_host.size(), timeout=2000)

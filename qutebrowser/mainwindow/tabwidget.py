@@ -13,28 +13,49 @@ from qutebrowser.qt.core import (pyqtSignal, pyqtSlot, Qt, QSize, QRect, QPoint,
                           QTimer, QUrl)
 from qutebrowser.qt.widgets import (QTabWidget, QTabBar, QSizePolicy, QProxyStyle,
                              QStyle, QStylePainter, QStyleOptionTab,
-                             QCommonStyle)
+                             QCommonStyle, QWidget, QBoxLayout)
 from qutebrowser.qt.gui import QIcon, QPalette, QColor
 
 from qutebrowser.utils import qtutils, objreg, utils, usertypes, log
 from qutebrowser.config import config, stylesheet
 from qutebrowser.misc import objects, debugcachestats
 from qutebrowser.browser import browsertab
+from qutebrowser.mainwindow import viewhost
 
 
-class TabWidget(QTabWidget):
+class TabWidget(QWidget):
 
     """The tab widget used for TabbedBrowser.
+
+    This is a facade which keeps the API of the QTabWidget it replaces
+    (count(), widget(), indexOf(), currentIndex(), insertTab(), ...). Tab
+    identity (order, indices, the current tab) lives here and in the TabBar;
+    what is actually displayed is up to the ViewHost, which owns all tab widgets
+    permanently and shows the current one (and, in the future, a paired one).
+
+    The QTabWidget-style method names (camelCase) are kept on purpose so the
+    many existing callers (and signals like currentChanged) keep working
+    unchanged.
+
+    Attributes:
+        view_host: The ViewHost which owns and displays the tab widgets.
+        _tabs: All tab widgets in tab bar order.
+        _tab_position: The current QTabWidget.TabPosition of the tab bar.
 
     Signals:
         tab_index_changed: Emitted when the current tab was changed.
                            arg 0: The index of the tab which is now focused.
                            arg 1: The total count of tabs.
         new_tab_requested: Emitted when a new tab is requested.
+        currentChanged: Emitted when the current tab index changed.
+        tabCloseRequested: Emitted when closing a tab was requested.
     """
 
     tab_index_changed = pyqtSignal(int, int)
     new_tab_requested = pyqtSignal('QUrl', bool, bool)
+    # QTabWidget-compatible names, see the class docstring.
+    currentChanged = pyqtSignal(int)  # noqa: N815
+    tabCloseRequested = pyqtSignal(int)  # noqa: N815
 
     # Strings for controlling the mute/audible text
     MUTE_STRING = '[M] '
@@ -42,17 +63,33 @@ class TabWidget(QTabWidget):
 
     def __init__(self, win_id, parent=None):
         super().__init__(parent)
+        self._tabs: list[browsertab.AbstractTab] = []
+        self._tab_position: QTabWidget.TabPosition | None = None
+
+        self._layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+        self.view_host = viewhost.ViewHost(self)
+
         bar = TabBar(win_id, self)
+        self._bar = bar
         self.setStyle(TabBarStyle())
-        self.setTabBar(bar)
+
+        # The order of these connections matters, and matches what QTabWidget
+        # did internally: first keep our tab list and the displayed tab in sync
+        # with the bar, only then notify everyone else.
+        bar.tabMoved.connect(self._on_tab_moved)
+        bar.currentChanged.connect(self._on_bar_current_changed)
         bar.tabCloseRequested.connect(self.tabCloseRequested)
         bar.tabMoved.connect(functools.partial(
             QTimer.singleShot, 0, self.update_tab_titles))
         bar.currentChanged.connect(self._on_current_changed)
         bar.new_tab_requested.connect(self._on_new_tab_requested)
+
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setDocumentMode(True)
-        self.setUsesScrollButtons(True)
+        bar.setDocumentMode(True)
+        bar.setExpanding(False)
+        bar.setUsesScrollButtons(True)
         bar.setDrawBase(False)
         self._init_config()
         config.instance.changed.connect(self._init_config)
@@ -60,18 +97,161 @@ class TabWidget(QTabWidget):
     @config.change_filter('tabs')
     def _init_config(self):
         """Initialize attributes based on the config."""
-        self.setMovable(True)
-        self.setTabsClosable(False)
+        bar = self.tab_bar()
+        bar.setMovable(True)
+        bar.setTabsClosable(False)
         position = config.val.tabs.position
         selection_behavior = config.val.tabs.select_on_remove
         self.setTabPosition(position)
-        self.setElideMode(config.val.tabs.title.elide)
+        bar.setElideMode(config.val.tabs.title.elide)
 
-        tabbar = self.tab_bar()
-        tabbar.vertical = position in [
+        bar.vertical = position in [
             QTabWidget.TabPosition.West, QTabWidget.TabPosition.East]
-        tabbar.setSelectionBehaviorOnRemove(selection_behavior)
-        tabbar.refresh()
+        bar.setSelectionBehaviorOnRemove(selection_behavior)
+        bar.refresh()
+
+    def setTabPosition(self, position: QTabWidget.TabPosition) -> None:
+        """Move the tab bar to the given side of the displayed tabs."""
+        if position == self._tab_position:
+            return
+        self._tab_position = position
+
+        shapes = {
+            QTabWidget.TabPosition.North: QTabBar.Shape.RoundedNorth,
+            QTabWidget.TabPosition.South: QTabBar.Shape.RoundedSouth,
+            QTabWidget.TabPosition.West: QTabBar.Shape.RoundedWest,
+            QTabWidget.TabPosition.East: QTabBar.Shape.RoundedEast,
+        }
+        self._bar.setShape(shapes[position])
+
+        vertical = position in [
+            QTabWidget.TabPosition.West, QTabWidget.TabPosition.East]
+        bar_first = position in [
+            QTabWidget.TabPosition.North, QTabWidget.TabPosition.West]
+        self._layout.setDirection(
+            QBoxLayout.Direction.LeftToRight if vertical
+            else QBoxLayout.Direction.TopToBottom)
+        self._layout.removeWidget(self._bar)
+        self._layout.removeWidget(self.view_host)
+        if bar_first:
+            self._layout.addWidget(self._bar)
+            self._layout.addWidget(self.view_host, stretch=1)
+        else:
+            self._layout.addWidget(self.view_host, stretch=1)
+            self._layout.addWidget(self._bar)
+
+    # QTabWidget-compatible tab API
+
+    def tabBar(self) -> "TabBar":
+        """Get the TabBar (QTabWidget API)."""
+        return self._bar
+
+    def count(self) -> int:
+        """Get the number of tabs."""
+        return len(self._tabs)
+
+    def widget(self, idx: int) -> browsertab.AbstractTab | None:
+        """Get the tab widget at the given index, or None if out of range."""
+        if 0 <= idx < len(self._tabs):
+            return self._tabs[idx]
+        return None
+
+    def indexOf(self, tab: QWidget | None) -> int:
+        """Get the index of the given tab widget, or -1 if it's not a tab."""
+        for idx, candidate in enumerate(self._tabs):
+            if candidate is tab:
+                return idx
+        return -1
+
+    def currentIndex(self) -> int:
+        """Get the index of the current tab, or -1 if there is none."""
+        return self._bar.currentIndex()
+
+    def setCurrentIndex(self, idx: int) -> None:
+        """Make the tab at the given index current."""
+        self._bar.setCurrentIndex(idx)
+
+    def currentWidget(self) -> browsertab.AbstractTab | None:
+        """Get the current tab widget, or None if there is none."""
+        return self.widget(self.currentIndex())
+
+    def setCurrentWidget(self, tab: QWidget) -> None:
+        """Make the given tab current."""
+        self.setCurrentIndex(self.indexOf(tab))
+
+    def addTab(self, page, icon_or_text, text_or_empty=None):
+        """Add a tab at the end.
+
+        See insertTab for the arguments.
+
+        Return:
+            The index of the newly added tab.
+        """
+        return self.insertTab(
+            len(self._tabs), page, icon_or_text, text_or_empty)
+
+    def insertTab(self, idx, page, icon_or_text, text_or_empty=None):
+        """Insert a tab, using our own text setting logic.
+
+        This mirrors the two QTabWidget::insertTab overloads:
+            - int index, QWidget * page, const QIcon & icon,
+              const QString & label
+            - int index, QWidget * page, const QString & label
+
+        This means we'll get different arguments based on the chosen overload.
+
+        Args:
+            idx: Where to insert the widget. If out of range, it's appended.
+            page: The QWidget to add.
+            icon_or_text: Either the QIcon to add or the label.
+            text_or_empty: Either the label or None.
+
+        Return:
+            The index of the newly added tab.
+        """
+        if text_or_empty is None:
+            icon = QIcon()
+            text = icon_or_text
+        else:
+            icon = icon_or_text
+            text = text_or_empty
+
+        if not 0 <= idx <= len(self._tabs):
+            idx = len(self._tabs)
+
+        self.view_host.add_view(page)
+        # Our list must be updated before the bar emits currentChanged.
+        self._tabs.insert(idx, page)
+        self._bar.insertTab(idx, icon, '')
+        self.update_tab_titles()
+        self.set_page_title(idx, text)
+        return idx
+
+    def removeTab(self, idx: int) -> None:
+        """Remove the tab at the given index.
+
+        Like QTabWidget::removeTab, this neither destroys nor reparents the
+        tab widget.
+        """
+        if not 0 <= idx < len(self._tabs):
+            return
+        # Our list must be updated before the bar emits currentChanged.
+        tab = self._tabs.pop(idx)
+        self._bar.removeTab(idx)
+        self.view_host.remove_view(tab)
+        self.update_tab_titles()
+
+    @pyqtSlot(int, int)
+    def _on_tab_moved(self, from_idx: int, to_idx: int) -> None:
+        """Keep our tab list in the same order as the tab bar."""
+        self._tabs.insert(to_idx, self._tabs.pop(from_idx))
+
+    @pyqtSlot(int)
+    def _on_bar_current_changed(self, index: int) -> None:
+        """Show the new current tab and notify QTabWidget-style listeners."""
+        tab = self.widget(index)
+        self.view_host.show_views([] if tab is None else [tab], focus=tab)
+        self.currentChanged.emit(index)
 
     def tab_bar(self) -> "TabBar":
         """Get the TabBar for this TabWidget."""
@@ -244,72 +424,6 @@ class TabWidget(QTabWidget):
             for idx in range(self.count()):
                 self.update_tab_title(idx)
 
-    def tabInserted(self, idx):
-        """Update titles when a tab was inserted."""
-        super().tabInserted(idx)
-        self.update_tab_titles()
-
-    def tabRemoved(self, idx):
-        """Update titles when a tab was removed."""
-        super().tabRemoved(idx)
-        self.update_tab_titles()
-
-    def addTab(self, page, icon_or_text, text_or_empty=None):
-        """Override addTab to use our own text setting logic.
-
-        Unfortunately QTabWidget::addTab has these two overloads:
-            - QWidget * page, const QIcon & icon, const QString & label
-            - QWidget * page, const QString & label
-
-        This means we'll get different arguments based on the chosen overload.
-
-        Args:
-            page: The QWidget to add.
-            icon_or_text: Either the QIcon to add or the label.
-            text_or_empty: Either the label or None.
-
-        Return:
-            The index of the newly added tab.
-        """
-        if text_or_empty is None:
-            text = icon_or_text
-            new_idx = super().addTab(page, '')
-        else:
-            icon = icon_or_text
-            text = text_or_empty
-            new_idx = super().addTab(page, icon, '')
-        self.set_page_title(new_idx, text)
-        return new_idx
-
-    def insertTab(self, idx, page, icon_or_text, text_or_empty=None):
-        """Override insertTab to use our own text setting logic.
-
-        Unfortunately QTabWidget::insertTab has these two overloads:
-            - int index, QWidget * page, const QIcon & icon,
-              const QString & label
-            - int index, QWidget * page, const QString & label
-
-        This means we'll get different arguments based on the chosen overload.
-
-        Args:
-            idx: Where to insert the widget.
-            page: The QWidget to add.
-            icon_or_text: Either the QIcon to add or the label.
-            text_or_empty: Either the label or None.
-
-        Return:
-            The index of the newly added tab.
-        """
-        if text_or_empty is None:
-            text = icon_or_text
-            new_idx = super().insertTab(idx, page, '')
-        else:
-            icon = icon_or_text
-            text = text_or_empty
-            new_idx = super().insertTab(idx, page, icon, '')
-        self.set_page_title(new_idx, text)
-        return new_idx
-
     @pyqtSlot(int)
     def _on_current_changed(self, index):
         """Emit the tab_index_changed signal if the current tab changed."""
@@ -357,7 +471,7 @@ class TabWidget(QTabWidget):
             style = self.style()
             assert style is not None
             icon = style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
-        super().setTabIcon(idx, icon)
+        self._bar.setTabIcon(idx, icon)
 
 
 class TabBar(QTabBar):
