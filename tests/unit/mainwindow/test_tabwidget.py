@@ -5,6 +5,7 @@
 
 """Tests for the custom TabWidget/TabBar."""
 
+import types
 import functools
 
 import pytest
@@ -611,47 +612,47 @@ class TestPairFocus:
     """Focus moving into the other half of a pair selects that tab."""
 
     @pytest.fixture
-    def widget(self, qtbot, monkeypatch, config_stub, fake_web_tab):
+    def env(self, qtbot, monkeypatch, config_stub, fake_web_tab):
         w = tabwidget.TabWidget(0)
         qtbot.add_widget(w)
         monkeypatch.setattr(tabwidget.objects, 'backend',
                             usertypes.Backend.QtWebKit)
         w.resize(800, 600)
-        w.tabs = [fake_web_tab(tab_id=i) for i in range(3)]
-        w.targets = []
-        for i, tab in enumerate(w.tabs):
+        tabs = [fake_web_tab(tab_id=i) for i in range(3)]
+        targets = []
+        for i, tab in enumerate(tabs):
             # Like a real tab, the focus ends up in a widget inside the tab.
             target = tab
             while target.focusProxy() is not None:
                 target = target.focusProxy()
             target.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-            w.targets.append(target)
+            targets.append(target)
             w.addTab(tab, f'tab{i}')
-        w.pair_tabs(w.tabs[0], w.tabs[1], Qt.Orientation.Horizontal)
+        w.pair_tabs(tabs[0], tabs[1], Qt.Orientation.Horizontal)
         w.show()
         qtbot.wait_exposed(w)
         w.activateWindow()
-        w.targets[0].setFocus()
-        qtbot.wait_until(lambda: QApplication.focusWidget() is w.targets[0],
+        targets[0].setFocus()
+        qtbot.wait_until(lambda: QApplication.focusWidget() is targets[0],
                          timeout=2000)
-        return w
+        return types.SimpleNamespace(widget=w, tabs=tabs, targets=targets)
 
-    def test_focusing_the_other_half_selects_it(self, widget, qtbot):
-        widget.targets[1].setFocus()
-        qtbot.wait_until(lambda: widget.currentWidget() is widget.tabs[1],
+    def test_focusing_the_other_half_selects_it(self, env, qtbot):
+        env.targets[1].setFocus()
+        qtbot.wait_until(lambda: env.widget.currentWidget() is env.tabs[1],
                          timeout=2000)
-        assert widget.tabs[0].isVisible()
-        assert widget.tabs[1].isVisible()
+        assert env.tabs[0].isVisible()
+        assert env.tabs[1].isVisible()
 
-    def test_focusing_the_current_half_changes_nothing(self, widget):
-        widget.targets[0].setFocus()
-        assert widget.currentWidget() is widget.tabs[0]
+    def test_focusing_the_current_half_changes_nothing(self, env):
+        env.targets[0].setFocus()
+        assert env.widget.currentWidget() is env.tabs[0]
 
-    def test_focusing_a_hidden_tab_changes_nothing(self, widget):
-        widget.targets[2].setFocus()
-        assert widget.currentWidget() is widget.tabs[0]
+    def test_focusing_a_hidden_tab_changes_nothing(self, env):
+        env.targets[2].setFocus()
+        assert env.widget.currentWidget() is env.tabs[0]
 
-    def test_without_pair(self, widget):
-        widget.unpair(widget.tabs[0])
-        widget.targets[1].setFocus()
-        assert widget.currentWidget() is widget.tabs[0]
+    def test_without_pair(self, env):
+        env.widget.unpair(env.tabs[0])
+        env.targets[1].setFocus()
+        assert env.widget.currentWidget() is env.tabs[0]
