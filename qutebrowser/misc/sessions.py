@@ -35,6 +35,7 @@ _PAIR_ORIENTATIONS = {
     'left-right': Qt.Orientation.Horizontal,
     'top-bottom': Qt.Orientation.Vertical,
 }
+_PAIR_ORIENTATION_NAMES = {v: k for k, v in _PAIR_ORIENTATIONS.items()}
 
 
 def _save_pairs(widget: tabwidget.TabWidget) -> list[_JsonType]:
@@ -43,56 +44,34 @@ def _save_pairs(widget: tabwidget.TabWidget) -> list[_JsonType]:
     The tabs are referenced by their (0-based) position in the saved list of
     tabs of the window. The ratio is the fraction of the space for the first.
     """
-    pairs: list[_JsonType] = []
-    for pair in widget.pairs():
-        pairs.append({
-            'tabs': [widget.indexOf(pair.first), widget.indexOf(pair.second)],
-            'orientation': next(
-                name for name, orientation in _PAIR_ORIENTATIONS.items()
-                if orientation == pair.orientation),
-            'ratio': pair.ratio,
-        })
-    return pairs
+    return [{
+        'tabs': [widget.indexOf(pair.first), widget.indexOf(pair.second)],
+        'orientation': _PAIR_ORIENTATION_NAMES[pair.orientation],
+        'ratio': pair.ratio,
+    } for pair in widget.pairs()]
 
 
-def _is_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _load_pairs(widget: tabwidget.TabWidget, data: Any) -> None:
+def _load_pairs(widget: tabwidget.TabWidget, pairs: Any) -> None:
     """Restore the tab pairs of a window, after all of its tabs were created.
 
-    Malformed pairs are skipped (the tabs are all kept), and an out-of-range
-    ratio is clamped.
+    Pairs are optional, so invalid ones are skipped instead of failing the
+    whole session load.
     """
-    if not isinstance(data, list):
-        log.sessions.debug(f"Ignoring invalid pairs: {data!r}")
+    if not isinstance(pairs, list):
+        log.sessions.debug(f"Ignoring invalid pairs: {pairs!r}")
         return
 
-    for entry in data:
+    # A tab can only be in one pair. Without this limit, a bogus file with many
+    # entries for the same tabs makes us relayout the window for every one.
+    for entry in pairs[:widget.count() // 2]:
         try:
-            if not isinstance(entry, dict):
-                raise ValueError("not a mapping")
-            indices = entry.get('tabs')
-            if (not isinstance(indices, list) or len(indices) != 2 or
-                    not all(_is_int(idx) and 0 <= idx < widget.count()
-                            for idx in indices)):
-                raise ValueError("invalid tabs")
-            orientation_name = entry.get('orientation')
-            if (not isinstance(orientation_name, str) or
-                    orientation_name not in _PAIR_ORIENTATIONS):
-                raise ValueError("invalid orientation")
-            ratio = entry.get('ratio', 0.5)
-            if (isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or
-                    not math.isfinite(ratio)):
-                raise ValueError("invalid ratio")
-
-            first, second = (widget.widget(idx) for idx in indices)
-            assert first is not None
-            assert second is not None
-            widget.pair_tabs(first, second, _PAIR_ORIENTATIONS[orientation_name],
-                             ratio)
-        except ValueError as e:
+            first, second = (widget.widget(idx) for idx in entry['tabs'])
+            orientation = _PAIR_ORIENTATIONS[entry['orientation']]
+            ratio = float(entry.get('ratio', 0.5))
+            if first is None or second is None or not math.isfinite(ratio):
+                raise ValueError("invalid tab or ratio")
+            widget.pair_tabs(first, second, orientation, ratio)
+        except (KeyError, TypeError, ValueError) as e:
             log.sessions.debug(f"Ignoring invalid pair {entry!r}: {e}")
 
 
@@ -542,8 +521,7 @@ class SessionManager(QObject):
                 new_tab.set_pinned(True)
         if tab_to_focus is not None:
             tabbed_browser.widget.setCurrentIndex(tab_to_focus)
-        if 'pairs' in win:
-            _load_pairs(tabbed_browser.widget, win['pairs'])
+        _load_pairs(tabbed_browser.widget, win.get('pairs', []))
 
         window.show()
         if win.get('active', False):
