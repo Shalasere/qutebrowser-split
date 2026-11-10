@@ -19,6 +19,14 @@ breaking changes (such as renamed commands) can happen in minor releases.
 v3.8.0 (unreleased)
 -------------------
 
+Added
+~~~~~
+
+- Two tabs of a window can now be shown side by side (or above each other)
+  with the new `:vsplit` and `:hsplit` commands. Both stay normal tabs, and
+  commands apply to the selected one. `:split-focus` selects the other tab and
+  `:split-close` ends the split. Splits are saved in sessions (#1716).
+
 Removed
 ~~~~~~~
 

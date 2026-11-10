@@ -80,6 +80,7 @@ possible to run or bind multiple commands by separating them with `;;`.
 |<<history,history>>|Show browsing history.
 |<<history-clear,history-clear>>|Clear all browsing history.
 |<<home,home>>|Open main startpage in current tab.
+|<<hsplit,hsplit>>|Show the current tab and another tab above each other.
 |<<insert-text,insert-text>>|Insert text at cursor position.
 |<<jseval,jseval>>|Evaluate a JavaScript string.
 |<<jump-mark,jump-mark>>|Jump to the mark named by `key`.
@@ -121,6 +122,8 @@ possible to run or bind multiple commands by separating them with `;;`.
 |<<set,set>>|Set an option.
 |<<set-mark,set-mark>>|Set a mark at the current scroll position in the current tab.
 |<<spawn,spawn>>|Spawn an external command.
+|<<split-close,split-close>>|End the split of the current tab.
+|<<split-focus,split-focus>>|Select the other tab of the split.
 |<<stop,stop>>|Stop loading in the current/[count]th tab.
 |<<tab-clone,tab-clone>>|Duplicate the current tab.
 |<<tab-close,tab-close>>|Close the current/[count]th tab.
@@ -138,6 +141,7 @@ possible to run or bind multiple commands by separating them with `;;`.
 |<<undo,undo>>|Re-open the last closed tab(s) or window.
 |<<version,version>>|Show version information.
 |<<view-source,view-source>>|Show the source of the current page in a new tab.
+|<<vsplit,vsplit>>|Show the current tab and another tab side by side.
 |<<window-only,window-only>>|Close all windows except for the current one.
 |<<yank,yank>>|Yank (copy) something to the clipboard or primary selection.
 |<<zoom,zoom>>|Set the zoom level for the current tab.
@@ -819,6 +823,18 @@ Note this only clears the global history (e.g. `~/.local/share/qutebrowser/histo
 === home
 Open main startpage in current tab.
 
+[[hsplit]]
+=== hsplit
+Syntax: +:hsplit ['index']+
+
+Show the current tab and another tab above each other.
+
+See `:vsplit` for details.
+
+==== positional arguments
+* +'index'+: The index of the tab to show below, starting with 1. If not given, a new tab with the current page is opened.
+
+
 [[insert-text]]
 === insert-text
 Syntax: +:insert-text 'text'+
@@ -1392,6 +1408,18 @@ Given to userscripts as $QUTE_COUNT.
 ==== note
 * This command does not split arguments after the last argument and handles quotes literally.
 
+[[split-close]]
+=== split-close
+End the split of the current tab.
+
+Both tabs stay open and are shown separately again.
+
+[[split-focus]]
+=== split-focus
+Select the other tab of the split.
+
+Commands apply to the selected tab.
+
 [[stop]]
 === stop
 Stop loading in the current/[count]th tab.
@@ -1613,6 +1641,18 @@ Show the source of the current page in a new tab.
  slightly different source.
  Some JavaScript processing may be applied.
  Needs the optional Pygments dependency for highlighting.
+
+
+[[vsplit]]
+=== vsplit
+Syntax: +:vsplit ['index']+
+
+Show the current tab and another tab side by side.
+
+Both tabs stay normal tabs with their own tab bar entry and history. Both are shown whenever one of them is selected, and the selected one is the one commands apply to. Selecting any other tab shows that tab alone again. Use `:split-close` to end the split, closing or moving either tab does so too. If the current tab already is in a split, only its orientation changes.
+
+==== positional arguments
+* +'index'+: The index of the tab to show on the right, starting with 1. If not given, a new tab with the current page is opened.
 
 
 [[window-only]]
