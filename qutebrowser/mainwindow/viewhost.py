@@ -16,12 +16,57 @@ QtWebEngine state) untouched whether it is shown alone, next to another tab,
 or hidden.
 """
 
+import dataclasses
 from collections.abc import Sequence
 
-from qutebrowser.qt.core import Qt
+from qutebrowser.qt.core import Qt, pyqtSlot
 from qutebrowser.qt.widgets import QApplication, QSplitter, QWidget
 
 from qutebrowser.utils import log
+
+
+@dataclasses.dataclass(eq=False)
+class ViewPair:
+
+    """Two views which are shown next to each other.
+
+    Compared by identity, so every pair is a distinct object even if it
+    describes the same views.
+
+    Attributes:
+        first: The view shown on the left/top.
+        second: The view shown on the right/bottom.
+        orientation: Qt.Orientation.Horizontal for left/right,
+                     Qt.Orientation.Vertical for top/bottom.
+        ratio: The fraction of the space given to the first view, always
+               between MIN_RATIO and 1 - MIN_RATIO.
+
+    Class attributes:
+        MIN_RATIO: The smallest fraction of the space a view can get.
+    """
+
+    MIN_RATIO = 0.1
+
+    first: QWidget
+    second: QWidget
+    orientation: Qt.Orientation = Qt.Orientation.Horizontal
+    ratio: float = 0.5
+
+    def __post_init__(self) -> None:
+        self.set_ratio(self.ratio)
+
+    def set_ratio(self, ratio: float) -> None:
+        """Set the ratio, clamped so neither view can disappear."""
+        self.ratio = min(max(ratio, self.MIN_RATIO), 1 - self.MIN_RATIO)
+
+    def contains(self, view: QWidget | None) -> bool:
+        """Check whether the given view is part of this pair."""
+        return view is not None and (view is self.first or view is self.second)
+
+    def other(self, view: QWidget) -> QWidget:
+        """Get the view which is paired with the given one."""
+        assert self.contains(view), view
+        return self.second if view is self.first else self.first
 
 
 class ViewHost(QSplitter):
@@ -30,6 +75,8 @@ class ViewHost(QSplitter):
 
     Attributes:
         _shown: The views currently shown, in display order.
+        _pair: The ViewPair currently shown, or None. Dragging the divider
+               updates its ratio.
 
     Class attributes:
         MAX_VIEWS: How many views can be shown at the same time.
@@ -41,6 +88,8 @@ class ViewHost(QSplitter):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setChildrenCollapsible(False)
         self._shown: list[QWidget] = []
+        self._pair: ViewPair | None = None
+        self.splitterMoved.connect(self._on_splitter_moved)
 
     def shown_views(self) -> list[QWidget]:
         """Get the views which are currently shown, in display order."""
@@ -95,6 +144,7 @@ class ViewHost(QSplitter):
             for view in old)
 
         self._shown = list(views)
+        self._pair = None
 
         # Order the pair, without reparenting (the widgets already are our
         # children, so QSplitter only moves them within its own list).
@@ -111,3 +161,30 @@ class ViewHost(QSplitter):
 
         for view in old:
             view.hide()
+
+    def show_pair(self, pair: ViewPair, focus: QWidget | None = None) -> None:
+        """Show both views of a pair, using its orientation and ratio."""
+        self.show_views([pair.first, pair.second], focus=focus)
+        self.setOrientation(pair.orientation)
+        # The sizes are only relative to each other, QSplitter scales them to
+        # the space available.
+        self.setSizes(self._sizes_for(pair))
+        self._pair = pair
+
+    def _sizes_for(self, pair: ViewPair) -> list[int]:
+        """Get a QSplitter sizes list which shows the given pair."""
+        sizes = [0] * self.count()
+        sizes[self.indexOf(pair.first)] = round(pair.ratio * 1000)
+        sizes[self.indexOf(pair.second)] = round((1 - pair.ratio) * 1000)
+        return sizes
+
+    @pyqtSlot()
+    def _on_splitter_moved(self) -> None:
+        """Remember where the user put the divider."""
+        if self._pair is None:
+            return
+        sizes = self.sizes()
+        first = sizes[self.indexOf(self._pair.first)]
+        second = sizes[self.indexOf(self._pair.second)]
+        if first + second > 0:
+            self._pair.set_ratio(first / (first + second))

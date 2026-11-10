@@ -176,3 +176,87 @@ class TestFocus:
         first, second, _third = focusable
         host.show_views([first, second], focus=second)
         assert QApplication.focusWidget() is first
+
+
+class TestViewPair:
+
+    def test_default_ratio_is_half(self):
+        pair = viewhost.ViewPair(QWidget(), QWidget())
+        assert pair.ratio == 0.5
+        assert pair.orientation == Qt.Orientation.Horizontal
+
+    @pytest.mark.parametrize("ratio, expected", [
+        (0.3, 0.3),
+        (-1, viewhost.ViewPair.MIN_RATIO),
+        (0, viewhost.ViewPair.MIN_RATIO),
+        (1, 1 - viewhost.ViewPair.MIN_RATIO),
+        (50, 1 - viewhost.ViewPair.MIN_RATIO),
+    ])
+    def test_ratio_is_clamped(self, ratio, expected):
+        pair = viewhost.ViewPair(QWidget(), QWidget(), ratio=ratio)
+        assert pair.ratio == pytest.approx(expected)
+        pair.set_ratio(ratio)
+        assert pair.ratio == pytest.approx(expected)
+
+    def test_contains_and_other(self):
+        first, second, third = QWidget(), QWidget(), QWidget()
+        pair = viewhost.ViewPair(first, second)
+        assert pair.contains(first)
+        assert pair.contains(second)
+        assert not pair.contains(third)
+        assert not pair.contains(None)
+        assert pair.other(first) is second
+        assert pair.other(second) is first
+
+    def test_pairs_are_compared_by_identity(self):
+        first, second = QWidget(), QWidget()
+        assert viewhost.ViewPair(first, second) != viewhost.ViewPair(first, second)
+
+
+class TestShowPair:
+
+    def test_uses_orientation(self, host, views, qtbot):
+        pair = viewhost.ViewPair(views[0], views[2], Qt.Orientation.Vertical)
+        host.show_pair(pair)
+        qtbot.wait_until(lambda: _is_shown(views[0]) and _is_shown(views[2]),
+                         timeout=2000)
+        assert host.orientation() == Qt.Orientation.Vertical
+        assert views[0].y() < views[2].y()
+        assert host.shown_views() == [views[0], views[2]]
+
+    def test_ratio_is_applied_to_the_layout(self, host, views, qtbot):
+        pair = viewhost.ViewPair(views[0], views[1], ratio=0.25)
+        host.show_pair(pair)
+        qtbot.wait_until(lambda: views[1].isVisible() and views[1].width() > 50,
+                         timeout=2000)
+        total = views[0].width() + views[1].width()
+        assert views[0].width() / total == pytest.approx(0.25, abs=0.03)
+
+    def test_dragging_the_divider_updates_the_ratio(self, host, views, qtbot):
+        pair = viewhost.ViewPair(views[0], views[1])
+        host.show_pair(pair)
+        qtbot.wait_until(lambda: views[1].isVisible() and views[1].width() > 50,
+                         timeout=2000)
+        host.moveSplitter(300, 1)
+        assert pair.ratio == pytest.approx(0.3, abs=0.03)
+
+    def test_ratio_is_restored_after_showing_something_else(
+            self, host, views, qtbot):
+        pair = viewhost.ViewPair(views[0], views[1])
+        host.show_pair(pair)
+        qtbot.wait_until(lambda: views[1].width() > 50, timeout=2000)
+        host.moveSplitter(300, 1)
+        host.show_views([views[2]])
+        assert pair.ratio == pytest.approx(0.3, abs=0.03)  # not touched
+        host.show_pair(pair)
+        qtbot.wait_until(lambda: views[1].width() > 50, timeout=2000)
+        total = views[0].width() + views[1].width()
+        assert views[0].width() / total == pytest.approx(0.3, abs=0.03)
+
+    def test_showing_other_views_forgets_the_pair(self, host, views, qtbot):
+        pair = viewhost.ViewPair(views[0], views[1])
+        host.show_pair(pair)
+        host.show_views([views[0], views[1]])
+        ratio = pair.ratio
+        host.moveSplitter(200, 1)
+        assert pair.ratio == ratio
