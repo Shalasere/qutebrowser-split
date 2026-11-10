@@ -50,7 +50,8 @@ class SignalFilter(QObject):
         """Filter signals and trigger TabbedBrowser signals if needed.
 
         Triggers signal if the original signal was sent from the _current_ tab
-        and not from any other one.
+        and not from any other one. If the current tab has a split pane, only
+        the view (page or pane) which has focus counts as current.
 
         The original signal does not matter, since we get the new signal and
         all args.
@@ -62,12 +63,15 @@ class SignalFilter(QObject):
         """
         tabbed_browser = objreg.get('tabbed-browser', scope='window',
                                     window=self._win_id)
+        # A split pane isn't in the tab bar, so look at the tab it belongs to.
+        owner = tab if tab.data.pane_owner is None else tab.data.pane_owner
         try:
-            tabidx = tabbed_browser.widget.indexOf(tab)
+            tabidx = tabbed_browser.widget.indexOf(owner)
         except RuntimeError:
             # The tab has been deleted already
             return
-        if tabidx == tabbed_browser.widget.currentIndex():
+        is_focused_view = (tab is not owner) == owner.data.pane_active
+        if tabidx == tabbed_browser.widget.currentIndex() and is_focused_view:
             if log_signal:
                 log.signals.debug("emitting: {} (tab {})".format(
                     debug.dbg_signal(signal, args), tabidx))

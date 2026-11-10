@@ -19,7 +19,7 @@ from qutebrowser.commands import userscripts, runners
 from qutebrowser.api import cmdutils
 from qutebrowser.config import config, configdata
 from qutebrowser.browser import (urlmarks, browsertab, navigate, webelem,
-                                 downloads)
+                                 downloads, inspector)
 from qutebrowser.keyinput import modeman, keyutils
 from qutebrowser.utils import (message, usertypes, log, qtutils, urlutils,
                                objreg, utils, standarddir, debug)
@@ -96,7 +96,7 @@ class CommandDispatcher:
         widget = self._tabbed_browser.widget.currentWidget()
         if widget is None:
             raise cmdutils.CommandError("No WebView available yet!")
-        return widget
+        return widget.active_pane()
 
     def _open(
         self,
@@ -317,6 +317,8 @@ class CommandDispatcher:
                            private=private)
             else:
                 curtab = self._cntwidget(count)
+                if curtab is not None and count is None:
+                    curtab = curtab.active_pane()
                 if curtab is None:
                     if count is None:
                         # We want to open a URL in the current tab, but none
@@ -378,6 +380,83 @@ class CommandDispatcher:
             parsed = self._parse_url(cur_url, force_search=force_search)
             if parsed is not None:
                 yield parsed
+
+    def _split(self, url, position):
+        """Show a split pane for the current tab.
+
+        Args:
+            url: The URL (as string) to show in the pane, or None to use the
+                 URL of the current page (or keep the page of an existing pane).
+            position: Where to show the pane (an inspector.Position).
+        """
+        tab = self._cntwidget()
+        if tab is None:
+            raise cmdutils.CommandError("No WebView available yet!")
+
+        qurl = None
+        if url is not None:
+            qurl = self._parse_url(url)
+            if qurl is None:  # Error was already shown
+                return
+        elif tab.data.pane is None:
+            qurl = tab.url()
+            if not qurl.isValid():
+                qurl = None
+
+        try:
+            self._tabbed_browser.open_pane(tab, qurl, position)
+        except inspector.Error as e:
+            raise cmdutils.CommandError(e)
+
+    @cmdutils.register(instance='command-dispatcher', scope='window',
+                       maxsplit=0)
+    @cmdutils.argument('url', completion=urlmodel.url)
+    def vsplit(self, url=None):
+        """Show a second page next to the current one (left/right).
+
+        The second page is a split pane inside the current tab. It is not an
+        extra tab, but page commands (like `:open`, `:back` or hints) act on
+        whichever of the two pages has focus. Use `:split-focus` to switch
+        between them, and `:split-close` to close the pane. The pane is also
+        closed with the tab.
+
+        If there already is a pane, it gets moved to the new position.
+
+        Args:
+            url: The URL to open in the pane. If not given, the current page is
+                 shown (or the existing pane keeps its page).
+        """
+        self._split(url, inspector.Position.right)
+
+    @cmdutils.register(instance='command-dispatcher', scope='window',
+                       maxsplit=0)
+    @cmdutils.argument('url', completion=urlmodel.url)
+    def hsplit(self, url=None):
+        """Show a second page below the current one (top/bottom).
+
+        See `:vsplit` for details.
+
+        Args:
+            url: The URL to open in the pane. If not given, the current page is
+                 shown (or the existing pane keeps its page).
+        """
+        self._split(url, inspector.Position.bottom)
+
+    @cmdutils.register(instance='command-dispatcher', scope='window')
+    def split_close(self):
+        """Close the split pane of the current tab."""
+        tab = self._cntwidget()
+        if tab is None or tab.data.pane is None:
+            raise cmdutils.CommandError("No split pane in this tab")
+        self._tabbed_browser.close_pane(tab)
+
+    @cmdutils.register(instance='command-dispatcher', scope='window')
+    def split_focus(self):
+        """Switch focus between the page and the split pane of the tab."""
+        tab = self._cntwidget()
+        if tab is None or tab.data.pane is None:
+            raise cmdutils.CommandError("No split pane in this tab")
+        self._tabbed_browser.focus_pane(tab, not tab.data.pane_active)
 
     @cmdutils.register(instance='command-dispatcher', scope='window')
     def tab_clone(self, bg=False, window=False, private=False):

@@ -285,12 +285,17 @@ class FullscreenNotification(QLabel):
 
 class InspectorSplitter(QSplitter):
 
-    """Allows putting an inspector inside the tab.
+    """Allows putting an inspector (or a split pane) inside the tab.
+
+    The slot next to the main webview is used by either a web inspector or a
+    split pane (a second browsing view), never both.
 
     Attributes:
         _main_idx: index of the main webview widget
-        _position: position of the inspector (right/left/top/bottom)
+        _position: position of the inspector/pane (right/left/top/bottom)
         _preferred_size: the preferred size of the inpector widget in pixels
+        _pane: The split pane widget, if any. Unlike the inspector, a pane
+               shares the space equally and keeps its ratio on resizes.
 
     Class attributes:
         _PROTECTED_MAIN_SIZE: How much space should be reserved for the main
@@ -313,9 +318,12 @@ class InspectorSplitter(QSplitter):
         self._inspector_idx: int | None = None
         self._position: inspector.Position | None = None
         self._preferred_size: int | None = None
+        self._pane: QWidget | None = None
 
     def cycle_focus(self):
         """Cycle keyboard focus between the main/inspector widget."""
+        if self._pane is not None:
+            raise inspector.Error("This tab has a split pane, use :split-focus")
         if self.count() == 1:
             raise inspector.Error("No inspector inside main window")
 
@@ -337,9 +345,9 @@ class InspectorSplitter(QSplitter):
         elif inspector_widget.hasFocus():
             main_widget.setFocus()
 
-    def set_inspector(self, inspector_widget: inspector.AbstractWebInspector,
-                      position: inspector.Position) -> None:
-        """Set the position of the inspector."""
+    def _insert_secondary(self, widget: QWidget,
+                          position: inspector.Position) -> None:
+        """Put a widget (inspector or pane) next to the main webview."""
         assert position != inspector.Position.window
 
         if position in [inspector.Position.right, inspector.Position.bottom]:
@@ -353,10 +361,56 @@ class InspectorSplitter(QSplitter):
                             if position in [inspector.Position.left,
                                             inspector.Position.right]
                             else Qt.Orientation.Vertical)
-        self.insertWidget(self._inspector_idx, inspector_widget)
+        self.insertWidget(self._inspector_idx, widget)
         self._position = position
+
+    def set_inspector(self, inspector_widget: inspector.AbstractWebInspector,
+                      position: inspector.Position) -> None:
+        """Set the position of the inspector."""
+        if self._pane is not None:
+            raise inspector.Error("Can't open the devtools in a tab with a "
+                                  "split pane")
+        self._insert_secondary(inspector_widget, position)
         self._load_preferred_size()
         self._adjust_size()
+
+    def has_pane(self) -> bool:
+        """Check whether a split pane is shown."""
+        return self._pane is not None
+
+    def main_widget(self) -> QWidget | None:
+        """Get the main webview widget."""
+        return self.widget(self._main_idx or 0)
+
+    def set_pane(self, pane: QWidget, position: inspector.Position) -> None:
+        """Show a split pane next to the main webview, sharing the space.
+
+        Calling this again with the same pane moves it to a different position.
+        """
+        if self._pane is not None and self._pane is not pane:
+            raise inspector.Error("This tab already has a split pane")
+        if self._pane is None and self.count() > 1:
+            raise inspector.Error("Can't split a tab which has docked devtools")
+
+        self._insert_secondary(pane, position)
+        self._pane = pane
+        pane.show()
+        self.setSizes([1, 1])
+
+    def remove_pane(self) -> None:
+        """Take the split pane out of the layout; the caller destroys it.
+
+        The pane is reparented right away (rather than waiting for its
+        deletion), so the slot is free again immediately.
+        """
+        pane = self._pane
+        self._pane = None
+        self._main_idx = None
+        self._inspector_idx = None
+        self._position = None
+        if pane is not None:
+            pane.hide()
+            pane.setParent(qtutils.QT_NONE)
 
     def _save_preferred_size(self) -> None:
         """Save the preferred size of the inspector widget."""
@@ -433,6 +487,8 @@ class InspectorSplitter(QSplitter):
 
     @pyqtSlot()
     def _on_splitter_moved(self) -> None:
+        if self._pane is not None:
+            return
         assert self._inspector_idx is not None
         sizes = self.sizes()
         self._preferred_size = sizes[self._inspector_idx]
@@ -442,7 +498,7 @@ class InspectorSplitter(QSplitter):
         """Window resize event."""
         assert e is not None
         super().resizeEvent(e)
-        if self.count() == 2:
+        if self.count() == 2 and self._pane is None:
             self._adjust_size()
 
 

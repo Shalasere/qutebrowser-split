@@ -39,9 +39,13 @@ class Objects:
 
 
 @pytest.fixture
-def objects():
+def tab(fake_web_tab):
+    return fake_web_tab()
+
+
+@pytest.fixture
+def objects(tab):
     signal_filter = signalfilter.SignalFilter(0)
-    tab = None
     signaller = Signaller()
     signaller.signal.connect(
         signal_filter.create(signaller.filtered_signal, tab))
@@ -94,3 +98,73 @@ def test_runtime_error(objects, tabbed_browser_stubs):
     browser.widget.index_of = RuntimeError
     objects.signaller.signal.emit('foo')
     assert objects.signaller.filtered_signal_arg is None
+
+
+class TestPane:
+
+    """Tests for tabs which have a split pane (another tab, not in the bar)."""
+
+    @pytest.fixture
+    def pane(self, tab, fake_web_tab):
+        pane = fake_web_tab()
+        pane.data.pane_owner = tab
+        tab.data.pane = pane
+        return pane
+
+    def _emit(self, signal_filter, tab):
+        signaller = Signaller()
+        signaller.signal.connect(
+            signal_filter.create(signaller.filtered_signal, tab))
+        signaller.signal.emit('foo')
+        return signaller.filtered_signal_arg
+
+    @pytest.mark.parametrize('pane_active, emitted', [
+        (False, True),
+        (True, False),
+    ])
+    def test_page_signals(self, tab, pane, tabbed_browser_stubs,
+                          pane_active, emitted):
+        """The page is only shown if the pane doesn't have focus."""
+        browser = tabbed_browser_stubs[0]
+        browser.widget.current_index = 0
+        browser.widget.index_of = 0
+        tab.data.pane_active = pane_active
+        arg = self._emit(signalfilter.SignalFilter(0), tab)
+        assert arg == ('foo' if emitted else None)
+
+    @pytest.mark.parametrize('pane_active, emitted', [
+        (False, False),
+        (True, True),
+    ])
+    def test_pane_signals(self, tab, pane, tabbed_browser_stubs,
+                          pane_active, emitted):
+        """The pane is only shown if it has focus."""
+        browser = tabbed_browser_stubs[0]
+        browser.widget.current_index = 0
+        browser.widget.index_of = 0
+        tab.data.pane_active = pane_active
+        arg = self._emit(signalfilter.SignalFilter(0), pane)
+        assert arg == ('foo' if emitted else None)
+
+    def test_pane_of_another_tab(self, tab, pane, tabbed_browser_stubs):
+        """A pane is hidden together with the tab it belongs to."""
+        browser = tabbed_browser_stubs[0]
+        browser.widget.current_index = 0
+        browser.widget.index_of = 1
+        tab.data.pane_active = True
+        assert self._emit(signalfilter.SignalFilter(0), pane) is None
+
+    def test_pane_looks_up_its_owner(self, tab, pane, tabbed_browser_stubs):
+        """A pane isn't in the tab bar, so indexOf() gets the owner."""
+        browser = tabbed_browser_stubs[0]
+        browser.widget.current_index = 0
+        seen = []
+
+        def index_of(widget):
+            seen.append(widget)
+            return 0
+
+        browser.widget.indexOf = index_of
+        tab.data.pane_active = True
+        self._emit(signalfilter.SignalFilter(0), pane)
+        assert seen == [tab]

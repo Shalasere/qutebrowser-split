@@ -21,7 +21,7 @@ from qutebrowser.qt.core import pyqtSignal, pyqtSlot, QTimer, QUrl, QPoint
 from qutebrowser.config import config
 from qutebrowser.keyinput import modeman
 from qutebrowser.mainwindow import tabwidget, mainwindow
-from qutebrowser.browser import signalfilter, browsertab, history
+from qutebrowser.browser import signalfilter, browsertab, history, inspector
 from qutebrowser.utils import (log, usertypes, utils, qtutils,
                                urlutils, message, jinja, version)
 from qutebrowser.misc import quitter, objects
@@ -244,6 +244,9 @@ class TabbedBrowser(QWidget):
         self.tab_deque = TabDeque()
         config.instance.changed.connect(self._on_config_changed)
         quitter.instance.shutting_down.connect(self.shutdown)
+        app = QApplication.instance()
+        assert isinstance(app, QApplication), app
+        app.focusChanged.connect(self._on_focus_changed)
 
     def _update_stack_size(self):
         newsize = config.instance.get('tabs.undo_stack_size')
@@ -323,9 +326,8 @@ class TabbedBrowser(QWidget):
 
         self._window().setWindowTitle(title)
 
-    def _connect_tab_signals(self, tab):
-        """Set up the needed signals for tab."""
-        # filtered signals
+    def _connect_filtered_signals(self, tab):
+        """Forward signals of tab (or its pane) to the cur_* signals if shown."""
         tab.link_hovered.connect(
             self._filter.create(self.cur_link_hovered, tab))
         tab.load_progress.connect(
@@ -346,6 +348,12 @@ class TabbedBrowser(QWidget):
             self._filter.create(self.cur_caret_selection_toggled, tab))
         tab.search.match_changed.connect(
             self._filter.create(self.cur_search_match_changed, tab))
+
+    def _connect_tab_signals(self, tab):
+        """Set up the needed signals for tab."""
+        self._connect_filtered_signals(tab)
+        tab.shutting_down.connect(
+            functools.partial(self._on_tab_shutting_down, tab))
         # misc
         tab.scroller.perc_changed.connect(self._on_scroll_pos_changed)
         tab.scroller.before_jump_requested.connect(lambda: self.set_mark("'"))
@@ -850,6 +858,123 @@ class TabbedBrowser(QWidget):
             return
         self.widget.update_tab_favicon(tab)
 
+    def open_pane(self, tab, url, position):
+        """Show a split pane next to the page of tab, or move an existing one.
+
+        A pane is a regular tab which isn't in the tab bar. It lives in the
+        InspectorSplitter slot of the tab it belongs to, and is destroyed with
+        that tab.
+
+        Args:
+            tab: The tab to add the pane to.
+            url: The QUrl to load in the pane, or None to keep its page.
+            position: An inspector.Position (the side of the pane).
+        """
+        splitter = tab.data.splitter
+        assert splitter is not None
+        pane = tab.data.pane
+        is_new = pane is None
+        if pane is None:
+            pane = browsertab.create(win_id=self._win_id,
+                                     private=self.is_private)
+            pane.data.pane_owner = tab
+            self._connect_pane_signals(tab, pane)
+        try:
+            splitter.set_pane(pane, position)
+        except inspector.Error:
+            if is_new:
+                self._destroy_pane(pane)
+            raise
+        log.webview.debug(f"Showing pane {pane!r} {position.name} of {tab!r}")
+        tab.data.pane = pane
+        if url is not None:
+            pane.load_url(url)
+        self.focus_pane(tab, True)
+
+    def close_pane(self, tab):
+        """Remove (and destroy) the split pane of tab."""
+        pane = tab.data.pane
+        if pane is None:
+            return
+        log.webview.debug(f"Closing pane {pane!r} of {tab!r}")
+        was_active = tab.data.pane_active
+        self._set_pane_active(tab, False)
+        assert tab.data.splitter is not None
+        tab.data.splitter.remove_pane()
+        tab.data.pane = None
+        self._destroy_pane(pane)
+        if was_active:
+            tab.setFocus()
+
+    def focus_pane(self, tab, pane_focused):
+        """Give focus to the split pane (or back to the page) of tab."""
+        target = tab.data.pane if pane_focused else tab
+        assert target is not None
+        self._set_pane_active(tab, pane_focused)
+        target.setFocus()
+
+    def _connect_pane_signals(self, tab, pane):
+        """Set up the needed signals for the split pane of tab."""
+        self._connect_filtered_signals(pane)
+        pane.window_close_requested.connect(
+            functools.partial(self.close_pane, tab))
+        pane.renderer_process_terminated.connect(
+            functools.partial(self._on_pane_renderer_process_terminated, tab))
+        pane.new_tab_requested.connect(self.tabopen)
+        if not self.is_private:
+            pane.history_item_triggered.connect(
+                history.web_history.add_from_tab)
+
+    def _destroy_pane(self, pane):
+        """Shut down and delete a pane which isn't in a splitter anymore."""
+        pane.private_api.shutdown()
+        pane.deleteLater()
+
+    def _set_pane_active(self, tab, active):
+        """Make commands act on the pane (or page) of tab."""
+        if tab.data.pane_active == active:
+            return
+        tab.data.pane_active = active
+
+        # Like when switching tabs
+        for mode in [usertypes.KeyMode.hint, usertypes.KeyMode.caret]:
+            modeman.leave(self._win_id, mode, 'pane focus changed', maybe=True)
+        if config.val.tabs.mode_on_change == 'normal':
+            for mode in modeman.INPUT_MODES:
+                modeman.leave(self._win_id, mode, 'pane focus changed',
+                              maybe=True)
+        self.current_tab_changed.emit(tab.active_pane())
+
+    @pyqtSlot(QWidget, QWidget)
+    def _on_focus_changed(self, _old, new):
+        """Track whether the page or the split pane has focus."""
+        tab = self.widget.currentWidget()
+        if (not isinstance(tab, browsertab.AbstractTab) or
+                tab.data.pane is None or new is None):
+            return
+        assert tab.data.splitter is not None
+        main = tab.data.splitter.main_widget()
+        if tab.data.pane is new or tab.data.pane.isAncestorOf(new):
+            self._set_pane_active(tab, True)
+        elif main is not None and (main is new or main.isAncestorOf(new)):
+            self._set_pane_active(tab, False)
+
+    def _on_tab_shutting_down(self, tab):
+        """Destroy the pane of a tab which is being closed."""
+        pane = tab.data.pane
+        if pane is not None:
+            tab.data.pane = None
+            tab.data.pane_active = False
+            self._destroy_pane(pane)
+
+    def _on_pane_renderer_process_terminated(self, tab, status, _code):
+        """Close a split pane whose renderer process terminated."""
+        if status == browsertab.TerminationStatus.normal:
+            return
+        message.error(f"Split pane renderer process terminated "
+                      f"({status.name}), closing it.")
+        self.close_pane(tab)
+
     @pyqtSlot(usertypes.KeyMode)
     def on_mode_entered(self, mode):
         """Save input mode when tabs.mode_on_change = restore."""
@@ -872,6 +997,8 @@ class TabbedBrowser(QWidget):
         widget = qtutils.add_optional(self.widget.currentWidget())
         if widget is None:
             return
+        assert isinstance(widget, browsertab.AbstractTab), widget
+        widget = widget.active_pane()
 
         log.modes.debug(f"Focus released, focusing {widget!r}")
         widget.setFocus()
@@ -904,7 +1031,7 @@ class TabbedBrowser(QWidget):
             return
 
         log.modes.debug("Current tab changed, focusing {!r}".format(tab))
-        tab.setFocus()
+        tab.active_pane().setFocus()
 
         modes_to_leave = [usertypes.KeyMode.hint, usertypes.KeyMode.caret]
 

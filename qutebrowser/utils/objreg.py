@@ -165,7 +165,7 @@ def _get_tab_registry(win_id: _WindowTab,
         tab = tabbed_browser.widget.currentWidget()
         if tab is None:
             raise RegistryUnavailableError('window')
-        tab_id = tab.tab_id
+        tab_id = tab.active_pane().tab_id
     tab_registry = get('tab-registry', scope='window', window=win_id)
     try:
         return tab_registry[tab_id].registry

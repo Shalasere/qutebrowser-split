@@ -22,6 +22,7 @@ class Backforward(textbase.TextBase):
             self.setText('')
             self.hide()
             return
+        tab = tab.active_pane()
         self.on_tab_changed(tab)
 
     def on_tab_changed(self, tab):

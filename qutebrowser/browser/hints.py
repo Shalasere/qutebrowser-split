@@ -626,7 +626,7 @@ class HintManager(QObject):
         # we should not start hinting.
         tabbed_browser = objreg.get('tabbed-browser', default=None,
                                     scope='window', window=self._win_id)
-        tab = tabbed_browser.widget.currentWidget()
+        tab = tabbed_browser.widget.currentWidget().active_pane()
         if tab.tab_id != self._context.tab.tab_id:
             log.hints.debug(
                 "Current tab changed ({} -> {}) before _start_cb is run."
@@ -736,6 +736,7 @@ class HintManager(QObject):
         tab = tabbed_browser.widget.currentWidget()
         if tab is None:
             raise cmdutils.CommandError("No WebView available yet!")
+        tab = tab.active_pane()
 
         mode_manager = modeman.instance(self._win_id)
         if mode_manager.mode == usertypes.KeyMode.hint:

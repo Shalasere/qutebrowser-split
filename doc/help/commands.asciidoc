@@ -80,6 +80,7 @@ possible to run or bind multiple commands by separating them with `;;`.
 |<<history,history>>|Show browsing history.
 |<<history-clear,history-clear>>|Clear all browsing history.
 |<<home,home>>|Open main startpage in current tab.
+|<<hsplit,hsplit>>|Show a second page below the current one (top/bottom).
 |<<insert-text,insert-text>>|Insert text at cursor position.
 |<<jseval,jseval>>|Evaluate a JavaScript string.
 |<<jump-mark,jump-mark>>|Jump to the mark named by `key`.
@@ -121,6 +122,8 @@ possible to run or bind multiple commands by separating them with `;;`.
 |<<set,set>>|Set an option.
 |<<set-mark,set-mark>>|Set a mark at the current scroll position in the current tab.
 |<<spawn,spawn>>|Spawn an external command.
+|<<split-close,split-close>>|Close the split pane of the current tab.
+|<<split-focus,split-focus>>|Switch focus between the page and the split pane of the tab.
 |<<stop,stop>>|Stop loading in the current/[count]th tab.
 |<<tab-clone,tab-clone>>|Duplicate the current tab.
 |<<tab-close,tab-close>>|Close the current/[count]th tab.
@@ -138,6 +141,7 @@ possible to run or bind multiple commands by separating them with `;;`.
 |<<undo,undo>>|Re-open the last closed tab(s) or window.
 |<<version,version>>|Show version information.
 |<<view-source,view-source>>|Show the source of the current page in a new tab.
+|<<vsplit,vsplit>>|Show a second page next to the current one (left/right).
 |<<window-only,window-only>>|Close all windows except for the current one.
 |<<yank,yank>>|Yank (copy) something to the clipboard or primary selection.
 |<<zoom,zoom>>|Set the zoom level for the current tab.
@@ -819,6 +823,21 @@ Note this only clears the global history (e.g. `~/.local/share/qutebrowser/histo
 === home
 Open main startpage in current tab.
 
+[[hsplit]]
+=== hsplit
+Syntax: +:hsplit ['url']+
+
+Show a second page below the current one (top/bottom).
+
+See `:vsplit` for details.
+
+==== positional arguments
+* +'url'+: The URL to open in the pane. If not given, the current page is shown (or the existing pane keeps its page).
+
+
+==== note
+* This command does not split arguments after the last argument and handles quotes literally.
+
 [[insert-text]]
 === insert-text
 Syntax: +:insert-text 'text'+
@@ -1392,6 +1411,14 @@ Given to userscripts as $QUTE_COUNT.
 ==== note
 * This command does not split arguments after the last argument and handles quotes literally.
 
+[[split-close]]
+=== split-close
+Close the split pane of the current tab.
+
+[[split-focus]]
+=== split-focus
+Switch focus between the page and the split pane of the tab.
+
 [[stop]]
 === stop
 Stop loading in the current/[count]th tab.
@@ -1614,6 +1641,21 @@ Show the source of the current page in a new tab.
  Some JavaScript processing may be applied.
  Needs the optional Pygments dependency for highlighting.
 
+
+[[vsplit]]
+=== vsplit
+Syntax: +:vsplit ['url']+
+
+Show a second page next to the current one (left/right).
+
+The second page is a split pane inside the current tab. It is not an extra tab, but page commands (like `:open`, `:back` or hints) act on whichever of the two pages has focus. Use `:split-focus` to switch between them, and `:split-close` to close the pane. The pane is also closed with the tab. If there already is a pane, it gets moved to the new position.
+
+==== positional arguments
+* +'url'+: The URL to open in the pane. If not given, the current page is shown (or the existing pane keeps its page).
+
+
+==== note
+* This command does not split arguments after the last argument and handles quotes literally.
 
 [[window-only]]
 === window-only

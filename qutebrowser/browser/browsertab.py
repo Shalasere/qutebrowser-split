@@ -119,6 +119,11 @@ class TabData:
         netrc_used: Whether netrc authentication was performed.
         input_mode: current input mode for the tab.
         splitter: InspectorSplitter used to show inspector inside the tab.
+        pane: Split pane (another tab, not in the tab bar) shown next to this
+              tab's page, if any.
+        pane_active: Whether the pane (rather than this tab's page) has focus
+                     and is what commands act on.
+        pane_owner: For a split pane: The tab it belongs to.
     """
 
     keep_icon: bool = False
@@ -132,6 +137,9 @@ class TabData:
     input_mode: usertypes.KeyMode = usertypes.KeyMode.normal
     last_navigation: usertypes.NavigationRequest | None = None
     splitter: miscwidgets.InspectorSplitter | None = None
+    pane: Optional['AbstractTab'] = None
+    pane_active: bool = False
+    pane_owner: Optional['AbstractTab'] = None
 
     def should_show_icon(self) -> bool:
         return (config.val.tabs.favicons.show == 'always' or
@@ -946,8 +954,11 @@ class AbstractTabPrivate:
     def toggle_inspector(self, position: inspector.Position | None) -> None:
         """Show/hide (and if needed, create) the web inspector for this tab."""
         tabdata = self._tab.data
+        assert tabdata.splitter is not None
+        if tabdata.splitter.has_pane():
+            raise inspector.Error("Can't open the devtools in a tab with a "
+                                  "split pane")
         if tabdata.inspector is None:
-            assert tabdata.splitter is not None
             tabdata.inspector = self._init_inspector(
                 splitter=tabdata.splitter,
                 win_id=self._tab.win_id)
@@ -1336,6 +1347,15 @@ class AbstractTab(QWidget):
         else:
             url = utils.elide(url, 100)
         return utils.get_repr(self, tab_id=self.tab_id, url=url)
+
+    def active_pane(self) -> 'AbstractTab':
+        """Get the view page commands should act on.
+
+        That's our split pane if it has focus, and this tab otherwise.
+        """
+        if self.data.pane is not None and self.data.pane_active:
+            return self.data.pane
+        return self
 
     def is_deleted(self) -> bool:
         """Check if the tab has been deleted."""

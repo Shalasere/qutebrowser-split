@@ -190,6 +190,108 @@ class TestInspectorSplitter:
                            match='No inspector inside main window'):
             splitter.cycle_focus()
 
+    @pytest.fixture
+    def fake_pane(self, qtbot):
+        pane = QWidget()
+        qtbot.add_widget(pane)
+        return pane
+
+    @pytest.mark.parametrize(
+        'position, orientation, pane_idx, webview_idx', [
+            (inspector.Position.left, Qt.Orientation.Horizontal, 0, 1),
+            (inspector.Position.right, Qt.Orientation.Horizontal, 1, 0),
+            (inspector.Position.top, Qt.Orientation.Vertical, 0, 1),
+            (inspector.Position.bottom, Qt.Orientation.Vertical, 1, 0),
+        ]
+    )
+    def test_set_pane(self, position, orientation, pane_idx, webview_idx,
+                      splitter, fake_pane, fake_webview):
+        assert not splitter.has_pane()
+        splitter.set_pane(fake_pane, position)
+
+        assert splitter.has_pane()
+        assert splitter.indexOf(fake_pane) == pane_idx
+        assert splitter.indexOf(fake_webview) == webview_idx
+        assert splitter.orientation() == orientation
+        assert splitter.main_widget() is fake_webview
+
+    def test_main_widget_without_pane(self, splitter, fake_webview):
+        assert splitter.main_widget() is fake_webview
+
+    def test_pane_shares_space_and_keeps_ratio(self, splitter, fake_pane,
+                                               qtbot):
+        splitter.resize(800, 600)
+        splitter.set_pane(fake_pane, inspector.Position.right)
+        splitter.show()
+        qtbot.wait_until(lambda: fake_pane.width() > 100)
+        assert abs(splitter.sizes()[0] - splitter.sizes()[1]) <= 2
+
+        # Unlike an inspector, the pane doesn't keep an absolute size
+        splitter.resize(400, 600)
+        qtbot.wait_until(lambda: sum(splitter.sizes()) < 500)
+        assert abs(splitter.sizes()[0] - splitter.sizes()[1]) <= 2
+
+    def test_moving_a_pane(self, splitter, fake_pane):
+        splitter.set_pane(fake_pane, inspector.Position.right)
+        splitter.set_pane(fake_pane, inspector.Position.bottom)
+        assert splitter.count() == 2
+        assert splitter.orientation() == Qt.Orientation.Vertical
+        assert splitter.indexOf(fake_pane) == 1
+
+    def test_only_one_pane(self, splitter, fake_pane, qtbot):
+        splitter.set_pane(fake_pane, inspector.Position.right)
+        other = QWidget()
+        qtbot.add_widget(other)
+        with pytest.raises(inspector.Error, match='already has a split pane'):
+            splitter.set_pane(other, inspector.Position.right)
+        assert splitter.count() == 2
+
+    def test_pane_with_inspector(self, splitter, fake_pane, fake_inspector):
+        splitter.set_inspector(fake_inspector, inspector.Position.right)
+        with pytest.raises(inspector.Error, match='docked devtools'):
+            splitter.set_pane(fake_pane, inspector.Position.right)
+        assert not splitter.has_pane()
+        assert splitter.count() == 2
+
+    def test_inspector_with_pane(self, splitter, fake_pane, fake_inspector):
+        splitter.set_pane(fake_pane, inspector.Position.right)
+        with pytest.raises(inspector.Error, match='split pane'):
+            splitter.set_inspector(fake_inspector, inspector.Position.right)
+        assert splitter.count() == 2
+
+    def test_cycle_focus_with_pane(self, splitter, fake_pane):
+        splitter.set_pane(fake_pane, inspector.Position.right)
+        with pytest.raises(inspector.Error, match=':split-focus'):
+            splitter.cycle_focus()
+
+    def test_moving_the_divider_with_a_pane_doesnt_save_a_size(
+            self, splitter, fake_pane, state_config):
+        splitter.set_pane(fake_pane, inspector.Position.right)
+        splitter.splitterMoved.emit(10, 1)
+        assert 'right' not in state_config['inspector']
+
+    def test_remove_pane(self, splitter, fake_pane, fake_webview):
+        splitter.set_pane(fake_pane, inspector.Position.right)
+        splitter.remove_pane()
+
+        assert not splitter.has_pane()
+        assert splitter.count() == 1
+        assert fake_pane.parentWidget() is None
+        assert not fake_pane.isVisible()
+        assert splitter.main_widget() is fake_webview
+
+    def test_remove_missing_pane(self, splitter):
+        splitter.remove_pane()
+        assert not splitter.has_pane()
+        assert splitter.count() == 1
+
+    def test_slot_is_free_after_removing_the_pane(self, splitter, fake_pane,
+                                                  fake_inspector):
+        splitter.set_pane(fake_pane, inspector.Position.right)
+        splitter.remove_pane()
+        splitter.set_inspector(fake_inspector, inspector.Position.right)
+        assert splitter.indexOf(fake_inspector) == 1
+
     @pytest.mark.parametrize(
         'config, width, height, position, expected_size', [
             # No config but enough big window

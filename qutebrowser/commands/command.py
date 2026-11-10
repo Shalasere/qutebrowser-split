@@ -375,6 +375,8 @@ class Command:
 
         if self._count is None:
             tab = tabbed_browser.widget.currentWidget()
+            if tab is not None:
+                tab = tab.active_pane()
         elif 1 <= self._count <= tabbed_browser.widget.count():
             cmdutils.check_overflow(self._count + 1, 'int')
             tab = tabbed_browser.widget.widget(self._count - 1)

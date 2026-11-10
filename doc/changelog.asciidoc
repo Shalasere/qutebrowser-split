@@ -19,6 +19,15 @@ breaking changes (such as renamed commands) can happen in minor releases.
 v3.8.0 (unreleased)
 -------------------
 
+Added
+~~~~~
+
+- New `:vsplit` and `:hsplit` commands to show a second page next to the
+  current one, inside the same tab (reusing the layout used for the web
+  inspector). Page commands (like `:open`, `:back` or hints) act on whichever of
+  the two pages has focus. Use `:split-focus` to switch between them and
+  `:split-close` to close the second page. (#1716)
+
 Removed
 ~~~~~~~
 
