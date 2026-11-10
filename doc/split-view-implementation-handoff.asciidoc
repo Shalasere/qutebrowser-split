@@ -202,9 +202,10 @@ page, so `TabWidget` has to stop using it. That is built on
 a `ViewHost` splitter (tabs are never reparented), then pairs, commands, focus
 and sessions on top.
 
-Measured (production / tests / docs, lines added) when both were first working:
-pane about +310 / +365 / +51, paired about +692 / +1479 / +48, the paired figure
-including roughly 300 production lines for the `TabWidget` rewrite.
+Measured after both were reviewed, as lines added/removed against the same base
+(production / tests): pane +359/-34 / +630, paired +598/-84 / +1051. About 300
+of the paired production lines are the `TabWidget` rewrite, which has to land
+before any pair code does.
 
 * Paired tabs give each page a real tab identity: commands, hints, status bar,
   sessions and undo need no routing, and devtools don't conflict.
