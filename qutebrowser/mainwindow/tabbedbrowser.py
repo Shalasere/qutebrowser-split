@@ -957,9 +957,10 @@ class TabbedBrowser(QWidget):
         self._leave_modes_on_switch('pane focus changed')
         self.current_tab_changed.emit(tab.active_pane())
 
-    @pyqtSlot(QWidget, QWidget)
     def _on_focus_changed(self, _old, new):
         """Track whether the page or the split pane has focus."""
+        # No @pyqtSlot here: on PyQt5 it can't be connected to focusChanged
+        # (same as app.on_focus_changed).
         tab = self.widget.currentWidget()
         if (self.is_shutting_down or new is None or
                 not isinstance(tab, browsertab.AbstractTab) or
