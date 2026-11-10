@@ -681,7 +681,10 @@ class TabbedBrowser(QWidget):
             if prev_focus is not None:
                 prev_focus.setFocus()
 
-        tab.show()
+        if not background:
+            # A background tab must stay hidden, the ViewHost would lay out
+            # every visible tab.
+            tab.show()
         self.new_tab.emit(tab, idx)
         return tab
 
