@@ -1106,11 +1106,14 @@ class CommandDispatcher:
     def vsplit(self, index: int | None = None) -> None:
         """Show the current tab and another tab side by side.
 
-        Both tabs stay normal tabs with their own tab bar entry and history.
-        Both are shown whenever one of them is selected, and the selected one
-        is the one commands apply to. Selecting any other tab shows that tab
-        alone again. Use `:split-close` to end the split, closing or moving
-        either tab does so too.
+        Both tabs stay normal tabs with their own tab bar entry and history, and
+        commands apply to the selected one. Both are shown whenever one of them
+        is selected, and clicking into the other one selects it. Selecting any
+        other tab shows that tab alone again.
+
+        Use `:split-close` to end the split. Closing, moving or pinning either
+        tab does so too, and `:undo` doesn't restore it. The tab bar doesn't
+        show which tabs are in a split.
 
         If the current tab already is in a split, only its orientation changes.
 
