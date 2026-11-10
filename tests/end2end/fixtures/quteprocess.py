@@ -273,6 +273,13 @@ def is_ignored_chromium_message(line):
         "Unable to create cache",
         # [3508:5516:1103/172403.608:ERROR:gpu_disk_cache.cc(711)]
         "Gpu Cache Creation failed: -2",
+
+        # Qt 6.11 on GitHub Actions (Archlinux), if the temporary basedir (and
+        # thus the cache) is already gone when Chromium shuts down
+        # [20081:20104:1110/041334.681557:ERROR:simple_file_enumerator.cc:21]
+        "opendir *webengine*Cache_Data: No such file or directory (2)",
+        # [20081:20104:1110/041334.681577:ERROR:simple_index_file.cc:621]
+        "Could not reconstruct index from disk",
     ]
     return any(testutils.pattern_match(pattern=pattern, value=message)
                for pattern in ignored_messages)

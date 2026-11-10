@@ -356,8 +356,12 @@ def test_set(quteproc, value):
     ('[0509/185222.442798:ERROR:ssl_client_socket_impl.cc(959)] handshake failed; returned -1, SSL error code 1, net_error -202', True),
     # Random ignored message
     ('[503633:503650:0509/185222.442798:ERROR:ssl_client_socket_impl.cc(959)] handshake failed; returned -1, SSL error code 1, net_error -202', True),
+    # Cache already deleted at shutdown (Qt 6.11)
+    ('[20081:20104:1110/041334.681557:ERROR:./../../../qtwebengine/src/3rdparty/chromium/net/disk_cache/simple/simple_file_enumerator.cc:21] opendir /home/runner/work/_temp/qutebrowser-basedir-jy43t9te/cache/webengine/Cache/Cache_Data: No such file or directory (2)', True),
+    ('[20081:20104:1110/041334.681577:ERROR:./../../../qtwebengine/src/3rdparty/chromium/net/disk_cache/simple/simple_index_file.cc:621] Could not reconstruct index from disk', True),
     # Not ignored
     ('[26598:26598:0605/191429.639416:WARNING:audio_manager.cc(317)] Test', False),
+    ('[1:1:0605/191429.1:ERROR:simple_file_enumerator.cc:21] opendir /home/user/documents: No such file or directory (2)', False),
 ])
 def test_is_ignored_chromium_message(message, ignored):
     assert quteprocess.is_ignored_chromium_message(message) == ignored
