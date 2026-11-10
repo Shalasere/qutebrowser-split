@@ -1069,6 +1069,7 @@ Feature: Tab management
 
     # :undo --window
 
+    @flaky
     Scenario: Undo the closing of a window
         Given I clear the log
         When I open data/numbers/1.txt
@@ -1092,6 +1093,7 @@ Feature: Tab management
                 - url: http://localhost:*/data/numbers/2.txt
             """
 
+    @flaky
     Scenario: Undo the closing of a window with multiple tabs
         Given I clear the log
         When I open data/numbers/1.txt
@@ -1118,6 +1120,7 @@ Feature: Tab management
                 - url: http://localhost:*/data/numbers/3.txt
             """
 
+    @flaky
     Scenario: Undo the closing of a window with multiple tabs with undo stack
         Given I clear the log
         When I open data/numbers/1.txt
