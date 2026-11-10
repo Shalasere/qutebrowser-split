@@ -213,7 +213,7 @@ class TabbedBrowser(QWidget):
             self.tabopen)  # type: ignore[arg-type,unused-ignore]
         self.widget.currentChanged.connect(self._on_current_changed)
         self.cur_fullscreen_requested.connect(self.widget.tab_bar().maybe_hide)
-        # A page in full screen hides the other half of a pair.
+        # A page in full screen is shown without the other half of its pair.
         self.cur_fullscreen_requested.connect(self.widget.update_display)
 
         self.widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -681,10 +681,6 @@ class TabbedBrowser(QWidget):
             if prev_focus is not None:
                 prev_focus.setFocus()
 
-        if not background:
-            # A background tab must stay hidden, the ViewHost would lay out
-            # every visible tab.
-            tab.show()
         self.new_tab.emit(tab, idx)
         return tab
 
