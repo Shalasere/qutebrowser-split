@@ -983,6 +983,28 @@ def test_other_tabs_completion_id0(qtmodeltester, fake_web_tab,
     })
 
 
+def test_window_tabs_completion(qtmodeltester, fake_web_tab, win_registry,
+                                tabbed_browser_stubs, info):
+    tabbed_browser_stubs[0].widget.tabs = [
+        fake_web_tab(QUrl('https://github.com'), 'GitHub', 0),
+        fake_web_tab(QUrl('https://wikipedia.org'), 'Wikipedia', 1),
+    ]
+    tabbed_browser_stubs[1].widget.tabs = [
+        fake_web_tab(QUrl('https://wiki.archlinux.org'), 'ArchWiki', 0),
+    ]
+    info.win_id = 0
+    model = miscmodels.window_tabs(info=info)
+    model.set_pattern('')
+    qtmodeltester.check(model)
+
+    _check_completions(model, {
+        'Tabs': [
+            ('1', 'https://github.com', 'GitHub'),
+            ('2', 'https://wikipedia.org', 'Wikipedia'),
+        ],
+    })
+
+
 def test_tab_focus_completion(qtmodeltester, fake_web_tab, win_registry,
                               tabbed_browser_stubs, info):
     tabbed_browser_stubs[0].widget.tabs = [

@@ -313,7 +313,7 @@ class TabWidget(QWidget):
         if tab.data.pinned:
             raise ValueError("Can't split a pinned tab")
         if self.pair_of(tab) is not None:
-            raise ValueError("The tab is already part of another split")
+            raise ValueError("The tab is already part of a split, use :split-close first")
 
     def pair_tabs(
             self,

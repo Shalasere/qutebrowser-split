@@ -1070,6 +1070,91 @@ class CommandDispatcher:
         cmdutils.check_overflow(new_idx, 'int')
         self._tabbed_browser.widget.tabBar().moveTab(cur_idx, new_idx)
 
+    def _split(self, orientation: Qt.Orientation, index: int | None) -> None:
+        """Pair the current tab with another one, or change the orientation."""
+        if config.val.tabs.tabs_are_windows:
+            raise cmdutils.CommandError("Can't split when using windows as tabs")
+
+        widget = self._tabbed_browser.widget
+        cur = self._current_widget()
+        pair = widget.pair_of(cur)
+
+        if index is not None:
+            other = widget.widget(index - 1)
+            if other is None:
+                raise cmdutils.CommandError(
+                    "There's no tab with index {}!".format(index))
+        elif pair is not None:
+            other = pair.other(cur)
+        else:
+            try:
+                widget.check_pairable(cur)
+            except ValueError as e:
+                raise cmdutils.CommandError(str(e))
+            url = cur.url()
+            other = self._tabbed_browser.tabopen(
+                url if url.isValid() and not url.isEmpty() else None,
+                background=True)
+
+        try:
+            widget.pair_tabs(cur, other, orientation)
+        except ValueError as e:
+            raise cmdutils.CommandError(str(e))
+
+    @cmdutils.register(instance='command-dispatcher', scope='window')
+    @cmdutils.argument('index', completion=miscmodels.window_tabs)
+    def vsplit(self, index: int | None = None) -> None:
+        """Show the current tab and another tab side by side.
+
+        Both tabs stay normal tabs with their own tab bar entry and history.
+        Both are shown whenever one of them is selected, and the selected one
+        is the one commands apply to. Selecting any other tab shows that tab
+        alone again. Use `:split-close` to end the split, closing or moving
+        either tab does so too.
+
+        If the current tab already is in a split, only its orientation changes.
+
+        Args:
+            index: The index of the tab to show on the right, starting with 1.
+                   If not given, a new tab with the current page is opened.
+        """
+        self._split(Qt.Orientation.Horizontal, index)
+
+    @cmdutils.register(instance='command-dispatcher', scope='window')
+    @cmdutils.argument('index', completion=miscmodels.window_tabs)
+    def hsplit(self, index: int | None = None) -> None:
+        """Show the current tab and another tab above each other.
+
+        See `:vsplit` for details.
+
+        Args:
+            index: The index of the tab to show below, starting with 1.
+                   If not given, a new tab with the current page is opened.
+        """
+        self._split(Qt.Orientation.Vertical, index)
+
+    @cmdutils.register(instance='command-dispatcher', scope='window')
+    def split_close(self) -> None:
+        """End the split of the current tab.
+
+        Both tabs stay open and are shown separately again.
+        """
+        if not self._tabbed_browser.widget.unpair(self._current_widget()):
+            raise cmdutils.CommandError("The current tab is not in a split")
+
+    @cmdutils.register(instance='command-dispatcher', scope='window')
+    def split_focus(self) -> None:
+        """Select the other tab of the split.
+
+        Commands apply to the selected tab.
+        """
+        widget = self._tabbed_browser.widget
+        cur = self._current_widget()
+        pair = widget.pair_of(cur)
+        if pair is None:
+            raise cmdutils.CommandError("The current tab is not in a split")
+        widget.setCurrentWidget(pair.other(cur))
+
     @cmdutils.register(instance='command-dispatcher', scope='window',
                        maxsplit=0, no_replace_variables=True)
     @cmdutils.argument('count', value=cmdutils.Value.count)

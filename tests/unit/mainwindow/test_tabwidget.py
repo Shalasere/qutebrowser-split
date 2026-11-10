@@ -510,9 +510,9 @@ class TestPairs:
         assert widget.pairs() == []
 
     def test_pair_member_of_another_pair(self, widget, tabs, pair01):
-        with pytest.raises(ValueError, match="already part of another"):
+        with pytest.raises(ValueError, match="already part of a split"):
             widget.pair_tabs(tabs[0], tabs[2], self.HORIZONTAL)
-        with pytest.raises(ValueError, match="already part of another"):
+        with pytest.raises(ValueError, match="already part of a split"):
             widget.pair_tabs(tabs[2], tabs[1], self.HORIZONTAL)
         assert widget.pairs() == [pair01]
 

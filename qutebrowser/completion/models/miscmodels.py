@@ -173,6 +173,15 @@ def other_tabs(*, info):
         cur_win_id=info.win_id)
 
 
+def window_tabs(*, info):
+    """A model to complete on the open tabs of the current window only.
+
+    Used for the vsplit and hsplit commands.
+    """
+    return _tabs(win_id_filter=lambda win_id: win_id == info.win_id,
+                 add_win_id=False, cur_win_id=info.win_id)
+
+
 def tab_focus(*, info):
     """A model to complete on open tabs in the current window."""
     model = _tabs(win_id_filter=lambda win_id: win_id == info.win_id,
