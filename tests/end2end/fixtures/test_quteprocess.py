@@ -361,3 +361,37 @@ def test_set(quteproc, value):
 ])
 def test_is_ignored_chromium_message(message, ignored):
     assert quteprocess.is_ignored_chromium_message(message) == ignored
+
+
+@pytest.mark.parametrize('loglevel, message, expected', [
+    # PDF.js (normal build) on an engine which is too old for it
+    (logging.ERROR,
+     'JS: [qute://pdfjs/web/viewer.mjs:19796] An error occurred while '
+     'rendering the page.\nMessage: CanvasGraphics[#pathCaches]'
+     '.getOrInsertComputed is not a function',
+     False),
+    (logging.ERROR,
+     'JS: [qute://pdfjs/web/viewer.mjs:9216] renderView: TypeError: '
+     'CanvasGraphics[#pathCaches].getOrInsertComputed is not a function',
+     False),
+    # Other PDF.js errors are still errors
+    (logging.ERROR,
+     'JS: [qute://pdfjs/web/viewer.mjs:1] TypeError: foo is not a function',
+     True),
+    # And so is the same error on other pages
+    (logging.ERROR,
+     'JS: [http://localhost/foo.js:1] TypeError: getOrInsertComputed is not '
+     'a function',
+     True),
+    (logging.ERROR, 'Something went wrong', True),
+    (logging.INFO, 'Everything is fine', False),
+])
+def test_is_error_logline(pytestconfig, loglevel, message, expected):
+    data = json.dumps({
+        'created': 86400, 'msecs': 0, 'levelname': logging.getLevelName(loglevel),
+        'name': 'message', 'module': 'message', 'funcName': 'error',
+        'lineno': 64, 'levelno': loglevel, 'message': message,
+    })
+    line = quteprocess.LogLine(pytestconfig, data)
+    # pylint: disable=protected-access
+    assert quteprocess.QuteProc._is_error_logline(None, line) == expected

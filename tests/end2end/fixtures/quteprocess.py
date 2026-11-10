@@ -558,10 +558,19 @@ class QuteProc(testprocess.Process):
             pattern="load status for <* tab_id=* url='*duckduckgo*'>: *",
             value=msg.message)
 
+        # The normal (non-legacy) PDF.js build needs Map.getOrInsertComputed,
+        # which isn't available in older QtWebEngine/Chromium versions (e.g.
+        # in the Archlinux CI images, which use the normal build). The tests
+        # which open a PDF don't depend on PDF.js being able to render it.
+        is_pdfjs_too_new = (
+            msg.message.startswith("JS: [qute://pdfjs/") and
+            "getOrInsertComputed is not a function" in msg.message)
+
         is_log_error = (msg.loglevel > logging.INFO and
                         not msg.message.startswith("Ignoring world ID") and
                         not msg.message.startswith(
-                            "Could not initialize QtNetwork SSL support."))
+                            "Could not initialize QtNetwork SSL support.") and
+                        not is_pdfjs_too_new)
         return is_log_error or is_js_error or is_ddg_load
 
     def _maybe_skip(self):

@@ -668,6 +668,8 @@ class WebEngineVersions:
         utils.VersionNumber(6, 11): (_BASES[140], '146.0.7680.80'),  # 2026-03-13
         utils.VersionNumber(6, 11, 1): (_BASES[140], '148.0.7778.96'),  # 2026-04-28
         utils.VersionNumber(6, 11, 2): (_BASES[140], '151.0.7922.71'),  # 2026-07-28
+        # Chromium base was bumped in a patch release; release date unknown.
+        utils.VersionNumber(6, 11, 3): ('140.0.7339.264', '155.0.8059.85'),
 
         ## Starting with Qt 6.12 Beta 4, QtWebEngine is versioned independently from Qt
         utils.VersionNumber(6, 140): (_BASES[140], '152.0.7977.83'),  # 2026-09-02
