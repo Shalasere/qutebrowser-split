@@ -174,7 +174,7 @@ def other_tabs(*, info):
 
 
 def window_tabs(*, info):
-    """A model to complete on the open tabs of the current window only.
+    """A model to complete on open tabs in the current window.
 
     Used for the vsplit and hsplit commands.
     """
@@ -184,8 +184,7 @@ def window_tabs(*, info):
 
 def tab_focus(*, info):
     """A model to complete on open tabs in the current window."""
-    model = _tabs(win_id_filter=lambda win_id: win_id == info.win_id,
-                  add_win_id=False, cur_win_id=info.win_id)
+    model = window_tabs(info=info)
 
     special = [
         ("last", "Focus the last-focused tab"),
