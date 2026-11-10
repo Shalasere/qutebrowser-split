@@ -217,6 +217,20 @@ Feature: Paired tabs
             """
         And tabs 1 and 2 should be paired left-right
 
+    Scenario: Clicking into the other tab selects it
+        When I open data/numbers/1.txt
+        And I run :vsplit
+        And I wait until data/numbers/1.txt is loaded
+        And I click into tab 2
+        And I run :open http://localhost:(port)/data/numbers/3.txt
+        Then data/numbers/3.txt should be loaded
+        And the following tabs should be open:
+            """
+            - data/numbers/1.txt
+            - data/numbers/3.txt (active)
+            """
+        And the visible tabs should be 1 and 2
+
     Scenario: Selecting a tab of the pair with :tab-focus
         When I open data/numbers/1.txt
         And I open data/numbers/2.txt in a new tab
@@ -279,6 +293,16 @@ Feature: Paired tabs
             - data/numbers/3.txt
             - data/numbers/4.txt
             """
+        And tabs 1 and 2 should be paired left-right
+
+    Scenario: Full screen shows only the page which requested it
+        When I open data/numbers/1.txt
+        And I run :vsplit
+        And I wait until data/numbers/1.txt is loaded
+        And the current page enters full screen
+        Then the visible tabs should be 1
+        When the current page leaves full screen
+        Then the visible tabs should be 1 and 2
         And tabs 1 and 2 should be paired left-right
 
     # Ending a pair

@@ -54,3 +54,50 @@ def session_replace(quteproc, pattern, replacement, name):
     assert pattern in data
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(data.replace(pattern, replacement))
+
+
+CLICK_SCRIPT = """
+from qutebrowser.qt.core import Qt
+from qutebrowser.qt.test import QTest
+
+tabbed_browser = objreg.get('tabbed-browser', scope='window',
+                            window='last-focused')
+tab = tabbed_browser.widget.widget({idx})
+target = tab
+while target.focusProxy() is not None:
+    target = target.focusProxy()
+QTest.mouseClick(target, Qt.MouseButton.LeftButton)
+"""
+
+
+@bdd.when(bdd.parsers.parse("I click into tab {idx:d}"))
+def click_into_tab(quteproc, idx):
+    """Click into the page of a visible tab, with a 1-based index."""
+    path = os.path.join(quteproc.basedir, 'click.py')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(CLICK_SCRIPT.format(idx=idx - 1))
+    quteproc.send_cmd(f':debug-pyeval --file {path}')
+    quteproc.wait_for(category='misc', loglevel=logging.DEBUG,
+                      message='pyeval output: No error')
+
+
+FULLSCREEN_SCRIPT = """
+tabbed_browser = objreg.get('tabbed-browser', scope='window',
+                            window='last-focused')
+tab = tabbed_browser.widget.currentWidget()
+# What QtWebEngine does when the page toggles full screen
+tab.data.fullscreen = {on}
+tab.fullscreen_requested.emit({on})
+"""
+
+
+@bdd.when(bdd.parsers.parse("the current page {action} full screen"))
+def toggle_fullscreen(quteproc, action):
+    """Fake the current page entering/leaving full screen."""
+    on = {'enters': True, 'leaves': False}[action]
+    path = os.path.join(quteproc.basedir, 'fullscreen.py')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(FULLSCREEN_SCRIPT.format(on=on))
+    quteproc.send_cmd(f':debug-pyeval --file {path}')
+    quteproc.wait_for(category='misc', loglevel=logging.DEBUG,
+                      message='pyeval output: No error')
