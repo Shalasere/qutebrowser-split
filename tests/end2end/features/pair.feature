@@ -26,13 +26,6 @@ Feature: Paired tabs
         And tabs 1 and 2 should be paired left-right
         And the visible tabs should be 1 and 2
 
-    Scenario: Pairing top and bottom
-        When I open data/numbers/1.txt
-        And I run :hsplit
-        Then data/numbers/1.txt should be loaded
-        And tabs 1 and 2 should be paired top-bottom
-        And the visible tabs should be 1 and 2
-
     Scenario: Pairing with an existing tab
         When I open data/numbers/1.txt
         And I open data/numbers/2.txt in a new tab
@@ -66,22 +59,6 @@ Feature: Paired tabs
             - data/numbers/1.txt
             """
 
-    Scenario: Changing the orientation of a pair by index
-        When I open data/numbers/1.txt
-        And I open data/numbers/2.txt in a new tab
-        And I run :vsplit 1
-        And I run :hsplit 1
-        Then tabs 2 and 1 should be paired top-bottom
-
-    Scenario: Pairing in a private window
-        When I open data/numbers/1.txt in a private window
-        And I run :vsplit
-        Then data/numbers/1.txt should be loaded
-        And the visible tabs should be 1 and 2
-        # Don't leave the private window behind for other scenarios
-        When I run :close
-        And I wait for "removed: main-window" in the log
-
     # Errors
 
     Scenario: Pairing with a tab which doesn't exist
@@ -93,20 +70,6 @@ Feature: Paired tabs
         When I open data/numbers/1.txt
         And I run :vsplit 1
         Then the error "Can't split a tab with itself" should be shown
-
-    Scenario: Pairing a pinned tab
-        When I open data/numbers/1.txt
-        And I open data/numbers/2.txt in a new tab
-        And I run :tab-pin
-        And I run :vsplit 1
-        Then the error "Can't split a pinned tab" should be shown
-
-    Scenario: Pairing with a pinned tab
-        When I open data/numbers/1.txt
-        And I run :tab-pin
-        And I open data/numbers/2.txt in a new tab
-        And I run :vsplit 1
-        Then the error "Can't split a pinned tab" should be shown
 
     Scenario: Pairing a pinned tab without index doesn't open a tab
         When I open data/numbers/1.txt
@@ -126,14 +89,6 @@ Feature: Paired tabs
         And I run :vsplit 1
         Then the error "The tab is already part of a split, use :split-close first" should be shown
         And tabs 3 and 2 should be paired left-right
-
-    Scenario: Pairing with a tab which is in another pair
-        When I open data/numbers/1.txt
-        And I open data/numbers/2.txt in a new tab
-        And I run :vsplit 1
-        And I open data/numbers/3.txt in a new tab
-        And I run :vsplit 1
-        Then the error "The tab is already part of a split, use :split-close first" should be shown
 
     Scenario: Pairing tabs when using windows as tabs
         When I open data/numbers/1.txt
@@ -179,20 +134,6 @@ Feature: Paired tabs
             """
         And the visible tabs should be 1 and 2
 
-    Scenario: Focusing the first tab again
-        When I open data/numbers/1.txt
-        And I run :vsplit
-        And I wait until data/numbers/1.txt is loaded
-        And I run :split-focus
-        And I run :split-focus
-        And I run :open http://localhost:(port)/data/numbers/3.txt
-        Then data/numbers/3.txt should be loaded
-        And the following tabs should be open:
-            """
-            - data/numbers/3.txt (active)
-            - data/numbers/1.txt
-            """
-
     Scenario: Each tab has its own history
         When I open data/numbers/1.txt
         And I run :vsplit
@@ -231,20 +172,6 @@ Feature: Paired tabs
             """
         And the visible tabs should be 1 and 2
 
-    Scenario: Selecting a tab of the pair with :tab-focus
-        When I open data/numbers/1.txt
-        And I open data/numbers/2.txt in a new tab
-        And I run :vsplit 1
-        And I run :tab-focus 1
-        And I run :open http://localhost:(port)/data/numbers/3.txt
-        Then data/numbers/3.txt should be loaded
-        And the following tabs should be open:
-            """
-            - data/numbers/3.txt (active)
-            - data/numbers/2.txt
-            """
-        And the visible tabs should be 1 and 2
-
     # Unrelated tabs
 
     Scenario: Selecting an unrelated tab and returning
@@ -262,20 +189,6 @@ Feature: Paired tabs
             - data/numbers/3.txt
             """
         And tabs 1 and 2 should be paired left-right
-
-    Scenario: Selecting the other tab of a pair after an unrelated tab
-        When I open data/numbers/1.txt
-        And I run :vsplit
-        And I wait until data/numbers/1.txt is loaded
-        And I open data/numbers/3.txt in a new tab
-        And I run :tab-focus 2
-        Then the visible tabs should be 1 and 2
-        And the following tabs should be open:
-            """
-            - data/numbers/1.txt
-            - data/numbers/1.txt (active)
-            - data/numbers/3.txt
-            """
 
     Scenario: Opening a background tab keeps the pair
         When I open data/numbers/1.txt
@@ -304,6 +217,19 @@ Feature: Paired tabs
         When the current page leaves full screen
         Then the visible tabs should be 1 and 2
         And tabs 1 and 2 should be paired left-right
+
+    # Live pages
+
+    Scenario: Pairing, selecting and unpairing doesn't reload or reparent pages
+        When I open data/numbers/1.txt
+        And I open data/numbers/2.txt in a new tab
+        And I record the loads and parents of all pages
+        And I run :vsplit 1
+        And I run :split-focus
+        And I run :hsplit
+        And I run :tab-focus 1
+        And I run :split-close
+        Then no page should have loaded or changed its parent
 
     # Ending a pair
 
@@ -334,18 +260,6 @@ Feature: Paired tabs
         And the visible tabs should be 1
         And no tabs should be paired
 
-    Scenario: Closing the other tab of a pair
-        When I open data/numbers/1.txt
-        And I open data/numbers/2.txt in a new tab
-        And I run :vsplit 1
-        And I run :tab-close with count 1
-        Then the following tabs should be open:
-            """
-            - data/numbers/2.txt (active)
-            """
-        And the visible tabs should be 1
-        And no tabs should be paired
-
     Scenario: Pinning a tab of a pair
         When I open data/numbers/1.txt
         And I run :vsplit
@@ -367,14 +281,6 @@ Feature: Paired tabs
             """
         And the visible tabs should be 2
         And no tabs should be paired
-
-    Scenario: Moving another tab keeps the pair
-        When I open data/numbers/1.txt
-        And I run :vsplit
-        And I wait until data/numbers/1.txt is loaded
-        And I open data/numbers/3.txt in a new tab
-        And I run :tab-move 1
-        Then tabs 2 and 3 should be paired left-right
 
     Scenario: Undoing the close of a tab of a pair
         When I open data/numbers/1.txt

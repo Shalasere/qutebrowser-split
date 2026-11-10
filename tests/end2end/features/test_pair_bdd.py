@@ -25,6 +25,38 @@ def check_visible_tabs(quteproc, indices):
                       message=f"pyeval output: '{expected}'")
 
 
+RECORD_SCRIPT = """
+tabbed_browser = objreg.get('tabbed-browser', scope='window',
+                            window='last-focused')
+for tab in tabbed_browser.widgets():
+    tab.test_loads = 0
+    tab.test_parent = tab.parentWidget()
+    tab.load_started.connect(
+        lambda tab=tab: setattr(tab, 'test_loads', tab.test_loads + 1))
+"""
+
+
+@bdd.when("I record the loads and parents of all pages")
+def record_loads(quteproc):
+    path = os.path.join(quteproc.basedir, 'record.py')
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(RECORD_SCRIPT)
+    quteproc.send_cmd(f':debug-pyeval --file {path}')
+    quteproc.wait_for(category='misc', loglevel=logging.DEBUG,
+                      message='pyeval output: No error')
+
+
+@bdd.then("no page should have loaded or changed its parent")
+def check_loads(quteproc):
+    quteproc.send_cmd(
+        ":debug-pyeval --quiet ','.join(f'{tab.test_loads}"
+        "{tab.parentWidget() is tab.test_parent}' for tab in "
+        "objreg.get('tabbed-browser', scope='window', window='last-focused')"
+        ".widgets())")
+    quteproc.wait_for(category='misc', loglevel=logging.DEBUG,
+                      message="pyeval output: '0True,0True'")
+
+
 @bdd.then(bdd.parsers.parse(
     "tabs {first:d} and {second:d} should be paired {orientation}"))
 def check_paired(quteproc, first, second, orientation):
