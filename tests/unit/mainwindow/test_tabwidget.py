@@ -10,7 +10,9 @@ import functools
 import pytest
 from unittest.mock import Mock
 
+from qutebrowser.qt.core import Qt
 from qutebrowser.qt.gui import QIcon, QPixmap
+from qutebrowser.qt.widgets import QApplication
 from qutebrowser.mainwindow import tabwidget
 from qutebrowser.utils import usertypes
 
@@ -391,3 +393,265 @@ class TestTabApi:
         # The displayed tab still fills the host.
         qtbot.wait_until(
             lambda: tabs[0].size() == widget.view_host.size(), timeout=2000)
+
+
+class TestPairs:
+
+    """Tests for pairing tabs of a TabWidget."""
+
+    HORIZONTAL = Qt.Orientation.Horizontal
+    VERTICAL = Qt.Orientation.Vertical
+
+    @pytest.fixture
+    def widget(self, qtbot, monkeypatch, config_stub):
+        w = tabwidget.TabWidget(0)
+        qtbot.add_widget(w)
+        monkeypatch.setattr(tabwidget.objects, 'backend',
+                            usertypes.Backend.QtWebKit)
+        w.resize(800, 600)
+        w.show()
+        qtbot.wait_exposed(w)
+        return w
+
+    @pytest.fixture
+    def tabs(self, widget, fake_web_tab):
+        result = [fake_web_tab(tab_id=i) for i in range(5)]
+        for i, tab in enumerate(result):
+            widget.addTab(tab, f'tab{i}')
+        return result
+
+    @pytest.fixture
+    def visible(self, widget, tabs):
+        """Get the indices of the visible tabs, after the layout settled."""
+        def _visible():
+            return [i for i, tab in enumerate(tabs) if tab.isVisible()]
+        return _visible
+
+    @pytest.fixture
+    def pair01(self, widget, tabs):
+        """Pair tab 0 with tab 1, tab 0 being current."""
+        return widget.pair_tabs(tabs[0], tabs[1], self.HORIZONTAL)
+
+    def test_no_pairs_initially(self, widget, tabs):
+        assert widget.pairs() == []
+        assert widget.pair_of(tabs[0]) is None
+        assert widget.pair_of(None) is None
+
+    def test_pairing_shows_both_tabs(self, widget, tabs, visible, qtbot):
+        pair = widget.pair_tabs(tabs[0], tabs[2], self.HORIZONTAL)
+        qtbot.wait_until(lambda: tabs[2].width() > 50, timeout=2000)
+        assert visible() == [0, 2]
+        assert widget.pairs() == [pair]
+        assert widget.pair_of(tabs[0]) is pair
+        assert widget.pair_of(tabs[2]) is pair
+        assert widget.pair_of(tabs[1]) is None
+        assert tabs[0].x() < tabs[2].x()
+
+    def test_pairing_does_not_change_tabs(self, widget, tabs, pair01):
+        assert widget.count() == 5
+        assert [widget.widget(i) for i in range(5)] == tabs
+        assert widget.currentWidget() is tabs[0]
+        assert all(widget.view_host is tab.parentWidget() for tab in tabs)
+
+    def test_selecting_the_partner_keeps_both_visible(
+            self, widget, tabs, pair01, visible):
+        widget.setCurrentWidget(tabs[1])
+        assert widget.currentWidget() is tabs[1]
+        assert visible() == [0, 1]
+        widget.setCurrentWidget(tabs[0])
+        assert visible() == [0, 1]
+
+    def test_unrelated_tab_is_shown_alone_and_pair_returns(
+            self, widget, tabs, pair01, visible, qtbot):
+        widget.setCurrentWidget(tabs[3])
+        assert visible() == [3]
+        widget.setCurrentWidget(tabs[1])
+        qtbot.wait_until(lambda: tabs[1].width() > 50, timeout=2000)
+        assert visible() == [0, 1]
+        assert widget.pair_of(tabs[0]) is pair01
+
+    def test_divider_ratio_survives_unrelated_tab(
+            self, widget, tabs, pair01, qtbot):
+        qtbot.wait_until(lambda: tabs[1].width() > 50, timeout=2000)
+        widget.view_host.moveSplitter(200, 1)
+        widget.setCurrentWidget(tabs[3])
+        widget.setCurrentWidget(tabs[0])
+        qtbot.wait_until(lambda: tabs[1].width() > 50, timeout=2000)
+        total = tabs[0].width() + tabs[1].width()
+        assert tabs[0].width() / total == pytest.approx(0.25, abs=0.03)
+
+    def test_repeating_changes_only_the_orientation(
+            self, widget, tabs, pair01, qtbot):
+        again = widget.pair_tabs(tabs[0], tabs[1], self.VERTICAL)
+        assert again is pair01
+        assert widget.pairs() == [pair01]
+        assert pair01.orientation == self.VERTICAL
+        qtbot.wait_until(lambda: tabs[1].width() > 50, timeout=2000)
+        assert tabs[0].y() < tabs[1].y()
+
+    def test_repeating_from_the_other_side(self, widget, tabs, pair01):
+        widget.setCurrentWidget(tabs[1])
+        again = widget.pair_tabs(tabs[1], tabs[0], self.VERTICAL)
+        assert again is pair01
+        # The order of an existing pair is kept.
+        assert (again.first, again.second) == (tabs[0], tabs[1])
+
+    def test_two_independent_pairs(self, widget, tabs, pair01, visible):
+        other = widget.pair_tabs(tabs[2], tabs[3], self.VERTICAL)
+        assert widget.pairs() == [pair01, other]
+        widget.setCurrentWidget(tabs[3])
+        assert visible() == [2, 3]
+        widget.setCurrentWidget(tabs[1])
+        assert visible() == [0, 1]
+
+    def test_pair_with_itself(self, widget, tabs):
+        with pytest.raises(ValueError, match="with itself"):
+            widget.pair_tabs(tabs[0], tabs[0], self.HORIZONTAL)
+        assert widget.pairs() == []
+
+    def test_pair_member_of_another_pair(self, widget, tabs, pair01):
+        with pytest.raises(ValueError, match="already part of another"):
+            widget.pair_tabs(tabs[0], tabs[2], self.HORIZONTAL)
+        with pytest.raises(ValueError, match="already part of another"):
+            widget.pair_tabs(tabs[2], tabs[1], self.HORIZONTAL)
+        assert widget.pairs() == [pair01]
+
+    @pytest.mark.parametrize("pinned_idx", [0, 2])
+    def test_pair_pinned_tab(self, widget, tabs, pinned_idx):
+        tabs[pinned_idx].set_pinned(True)
+        with pytest.raises(ValueError, match="pinned"):
+            widget.pair_tabs(tabs[0], tabs[2], self.HORIZONTAL)
+        assert widget.pairs() == []
+
+    def test_pair_foreign_tab(self, widget, tabs, fake_web_tab):
+        with pytest.raises(ValueError, match="not in this window"):
+            widget.pair_tabs(tabs[0], fake_web_tab(), self.HORIZONTAL)
+
+    def test_unpair(self, widget, tabs, pair01, visible):
+        assert widget.unpair(tabs[1])
+        assert widget.pairs() == []
+        assert widget.currentWidget() is tabs[0]
+        assert visible() == [0]
+        assert widget.count() == 5
+
+    def test_unpair_without_pair(self, widget, tabs, pair01):
+        assert not widget.unpair(tabs[3])
+        assert widget.pairs() == [pair01]
+
+    @pytest.mark.parametrize("closed, current", [
+        (0, 0), (0, 1), (1, 0), (1, 1),
+    ])
+    def test_removing_a_member_dissolves_the_pair(
+            self, widget, tabs, pair01, visible, closed, current):
+        widget.setCurrentWidget(tabs[current])
+        widget.removeTab(closed)
+        assert widget.pairs() == []
+        survivor = tabs[1 - closed]
+        assert widget.indexOf(survivor) != -1
+        # Whichever tab is shown now, it is shown alone.
+        assert len(visible()) == 1
+        assert not tabs[closed].isVisible()
+
+    def test_removing_the_other_tab_keeps_the_pair(
+            self, widget, tabs, pair01, visible):
+        widget.removeTab(3)
+        assert widget.pairs() == [pair01]
+        assert visible() == [0, 1]
+
+    def test_new_background_tab_keeps_the_pair(
+            self, widget, tabs, pair01, fake_web_tab):
+        new = fake_web_tab()
+        widget.insertTab(1, new, 'bg')
+        assert widget.pairs() == [pair01]
+        assert not new.isVisible()
+        assert tabs[0].isVisible()
+        assert tabs[1].isVisible()
+
+    def test_new_foreground_tab_is_shown_alone(
+            self, widget, tabs, pair01, fake_web_tab):
+        new = fake_web_tab()
+        idx = widget.insertTab(5, new, 'fg')
+        widget.setCurrentIndex(idx)
+        assert new.isVisible()
+        assert not tabs[0].isVisible()
+        assert not tabs[1].isVisible()
+        assert widget.pairs() == [pair01]
+
+    @pytest.mark.parametrize("src, dest", [(0, 3), (1, 4), (1, 0)])
+    def test_moving_a_member_dissolves_the_pair(
+            self, widget, tabs, pair01, visible, src, dest):
+        widget.tabBar().moveTab(src, dest)
+        assert widget.pairs() == []
+        assert len(visible()) == 1
+
+    def test_moving_another_tab_keeps_the_pair(
+            self, widget, tabs, pair01, visible):
+        widget.tabBar().moveTab(3, 0)
+        assert widget.pairs() == [pair01]
+        assert len(visible()) == 2
+
+    def test_full_screen_shows_only_that_page(
+            self, widget, tabs, pair01, visible, qtbot):
+        tabs[0].data.fullscreen = True
+        widget.update_display()
+        assert visible() == [0]
+        tabs[0].data.fullscreen = False
+        widget.update_display()
+        qtbot.wait_until(lambda: tabs[1].width() > 50, timeout=2000)
+        assert visible() == [0, 1]
+        assert widget.pairs() == [pair01]
+
+    def test_pairs_returns_a_copy(self, widget, tabs, pair01):
+        widget.pairs().clear()
+        assert widget.pairs() == [pair01]
+
+
+class TestPairFocus:
+
+    """Focus moving into the other half of a pair selects that tab."""
+
+    @pytest.fixture
+    def widget(self, qtbot, monkeypatch, config_stub, fake_web_tab):
+        w = tabwidget.TabWidget(0)
+        qtbot.add_widget(w)
+        monkeypatch.setattr(tabwidget.objects, 'backend',
+                            usertypes.Backend.QtWebKit)
+        w.resize(800, 600)
+        w.tabs = [fake_web_tab(tab_id=i) for i in range(3)]
+        w.targets = []
+        for i, tab in enumerate(w.tabs):
+            # Like a real tab, the focus ends up in a widget inside the tab.
+            target = tab
+            while target.focusProxy() is not None:
+                target = target.focusProxy()
+            target.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            w.targets.append(target)
+            w.addTab(tab, f'tab{i}')
+        w.pair_tabs(w.tabs[0], w.tabs[1], Qt.Orientation.Horizontal)
+        w.show()
+        qtbot.wait_exposed(w)
+        w.activateWindow()
+        w.targets[0].setFocus()
+        qtbot.wait_until(lambda: QApplication.focusWidget() is w.targets[0],
+                         timeout=2000)
+        return w
+
+    def test_focusing_the_other_half_selects_it(self, widget, qtbot):
+        widget.targets[1].setFocus()
+        qtbot.wait_until(lambda: widget.currentWidget() is widget.tabs[1],
+                         timeout=2000)
+        assert widget.tabs[0].isVisible()
+        assert widget.tabs[1].isVisible()
+
+    def test_focusing_the_current_half_changes_nothing(self, widget):
+        widget.targets[0].setFocus()
+        assert widget.currentWidget() is widget.tabs[0]
+
+    def test_focusing_a_hidden_tab_changes_nothing(self, widget):
+        widget.targets[2].setFocus()
+        assert widget.currentWidget() is widget.tabs[0]
+
+    def test_without_pair(self, widget):
+        widget.unpair(widget.tabs[0])
+        widget.targets[1].setFocus()
+        assert widget.currentWidget() is widget.tabs[0]

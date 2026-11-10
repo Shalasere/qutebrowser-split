@@ -213,6 +213,8 @@ class TabbedBrowser(QWidget):
             self.tabopen)  # type: ignore[arg-type,unused-ignore]
         self.widget.currentChanged.connect(self._on_current_changed)
         self.cur_fullscreen_requested.connect(self.widget.tab_bar().maybe_hide)
+        # A page in full screen hides the other half of a pair.
+        self.cur_fullscreen_requested.connect(self.widget.update_display)
 
         self.widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -984,6 +986,8 @@ class TabbedBrowser(QWidget):
     def _on_pinned_changed(self, tab):
         """Update the tab's pinned status."""
         idx = self.widget.indexOf(tab)
+        if tab.data.pinned and self.widget.unpair(tab):
+            message.info("Closed the split because the tab was pinned.")
         self.widget.update_tab_favicon(tab)
         self.widget.update_tab_title(idx)
 

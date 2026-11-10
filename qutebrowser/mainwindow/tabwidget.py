@@ -13,7 +13,7 @@ from qutebrowser.qt.core import (pyqtSignal, pyqtSlot, Qt, QSize, QRect, QPoint,
                           QTimer, QUrl)
 from qutebrowser.qt.widgets import (QTabWidget, QTabBar, QSizePolicy, QProxyStyle,
                              QStyle, QStylePainter, QStyleOptionTab,
-                             QCommonStyle, QWidget, QBoxLayout)
+                             QCommonStyle, QWidget, QBoxLayout, QApplication)
 from qutebrowser.qt.gui import QIcon, QPalette, QColor
 
 from qutebrowser.utils import qtutils, objreg, utils, usertypes, log
@@ -31,7 +31,14 @@ class TabWidget(QWidget):
     (count(), widget(), indexOf(), currentIndex(), insertTab(), ...). Tab
     identity (order, indices, the current tab) lives here and in the TabBar;
     what is actually displayed is up to the ViewHost, which owns all tab widgets
-    permanently and shows the current one (and, in the future, a paired one).
+    permanently and shows the current one - or both tabs of a pair, if the
+    current tab is part of one.
+
+    A pair links two distinct, unpinned tabs of this window. Both stay ordinary
+    tabs (own tab bar entry, index, history, ...), the pair only decides which
+    tabs are shown together while one of them is the current tab. Closing or
+    moving a member, or pinning it, dissolves its pair. A tab is part of at
+    most one pair, and tabs are identified by object, never by index.
 
     The QTabWidget-style method names (camelCase) are kept on purpose so the
     many existing callers (and signals like currentChanged) keep working
@@ -40,6 +47,7 @@ class TabWidget(QWidget):
     Attributes:
         view_host: The ViewHost which owns and displays the tab widgets.
         _tabs: All tab widgets in tab bar order.
+        _pairs: All tab pairs of this window.
         _tab_position: The current QTabWidget.TabPosition of the tab bar.
 
     Signals:
@@ -64,6 +72,7 @@ class TabWidget(QWidget):
     def __init__(self, win_id, parent=None):
         super().__init__(parent)
         self._tabs: list[browsertab.AbstractTab] = []
+        self._pairs: list[viewhost.ViewPair] = []
         self._tab_position: QTabWidget.TabPosition | None = None
 
         self._layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, self)
@@ -93,6 +102,10 @@ class TabWidget(QWidget):
         bar.setDrawBase(False)
         self._init_config()
         config.instance.changed.connect(self._init_config)
+
+        app = QApplication.instance()
+        assert isinstance(app, QApplication), app
+        app.focusChanged.connect(self._on_focus_changed)
 
     @config.change_filter('tabs')
     def _init_config(self):
@@ -237,21 +250,142 @@ class TabWidget(QWidget):
             return
         # Our list must be updated before the bar emits currentChanged.
         tab = self._tabs.pop(idx)
+        # The survivor of a pair must be shown alone, whichever tab the bar
+        # selects next.
+        was_paired = self._drop_pair(tab)
         self._bar.removeTab(idx)
         self.view_host.remove_view(tab)
+        if was_paired:
+            self.update_display()
         self.update_tab_titles()
 
     @pyqtSlot(int, int)
     def _on_tab_moved(self, from_idx: int, to_idx: int) -> None:
         """Keep our tab list in the same order as the tab bar."""
-        self._tabs.insert(to_idx, self._tabs.pop(from_idx))
+        tab = self._tabs.pop(from_idx)
+        self._tabs.insert(to_idx, tab)
+        if self.unpair(tab):
+            log.webview.debug(f"Dissolved pair because {tab!r} was moved")
 
     @pyqtSlot(int)
     def _on_bar_current_changed(self, index: int) -> None:
         """Show the new current tab and notify QTabWidget-style listeners."""
-        tab = self.widget(index)
-        self.view_host.show_views([] if tab is None else [tab], focus=tab)
+        self.update_display()
         self.currentChanged.emit(index)
+
+    @pyqtSlot()
+    def update_display(self) -> None:
+        """Show the current tab, together with its partner if it has one.
+
+        A tab in page full screen is always shown alone, so the page really
+        fills the window.
+        """
+        tab = self.currentWidget()
+        if tab is None:
+            self.view_host.show_views([])
+            return
+        pair = self.pair_of(tab)
+        if pair is None or tab.data.fullscreen:
+            self.view_host.show_views([tab], focus=tab)
+        else:
+            self.view_host.show_pair(pair, focus=tab)
+
+    # Tab pairs
+
+    def pairs(self) -> list[viewhost.ViewPair]:
+        """Get all tab pairs of this window."""
+        return list(self._pairs)
+
+    def pair_of(self, tab: QWidget | None) -> viewhost.ViewPair | None:
+        """Get the pair the given tab is a member of, if any."""
+        for pair in self._pairs:
+            if pair.contains(tab):
+                return pair
+        return None
+
+    def check_pairable(self, tab: browsertab.AbstractTab) -> None:
+        """Make sure a tab can be part of a new pair.
+
+        Raises ValueError with a message for the user if not.
+        """
+        if self.indexOf(tab) == -1:
+            raise ValueError("The tab is not in this window")
+        if tab.data.pinned:
+            raise ValueError("Can't split a pinned tab")
+        if self.pair_of(tab) is not None:
+            raise ValueError("The tab is already part of another split")
+
+    def pair_tabs(
+            self,
+            first: browsertab.AbstractTab,
+            second: browsertab.AbstractTab,
+            orientation: Qt.Orientation,
+            ratio: float = 0.5,
+    ) -> viewhost.ViewPair:
+        """Show two tabs next to each other whenever one of them is current.
+
+        If the two tabs are already paired with each other, only the
+        orientation is changed. Nothing is reloaded or reparented.
+
+        Args:
+            first: The tab shown left/top.
+            second: The tab shown right/bottom.
+            orientation: Horizontal for left/right, Vertical for top/bottom.
+            ratio: The fraction of the space for the first tab (clamped).
+
+        Raises ValueError with a message for the user if the tabs can't be
+        paired.
+        """
+        if first is second:
+            raise ValueError("Can't split a tab with itself")
+
+        pair = self.pair_of(first)
+        if pair is not None and pair.contains(second):
+            pair.orientation = orientation
+        else:
+            self.check_pairable(first)
+            self.check_pairable(second)
+            pair = viewhost.ViewPair(first, second, orientation, ratio)
+            self._pairs.append(pair)
+        log.webview.debug(f"Paired {first!r} with {second!r}: {pair!r}")
+        self.update_display()
+        return pair
+
+    def unpair(self, tab: QWidget | None) -> bool:
+        """Dissolve the pair of the given tab, keeping both tabs open.
+
+        Return:
+            True if there was a pair, False otherwise.
+        """
+        if not self._drop_pair(tab):
+            return False
+        self.update_display()
+        return True
+
+    def _drop_pair(self, tab: QWidget | None) -> bool:
+        """Forget the pair of the given tab without updating the display."""
+        pair = self.pair_of(tab)
+        if pair is None:
+            return False
+        log.webview.debug(f"Dissolving {pair!r}")
+        self._pairs.remove(pair)
+        return True
+
+    @pyqtSlot('QWidget*', 'QWidget*')
+    def _on_focus_changed(self, _old: QWidget | None, new: QWidget | None) -> None:
+        """Select the paired tab when the user clicks into it.
+
+        The selected tab is the one which commands apply to, so this has to
+        happen before any command can run.
+        """
+        current = self.currentWidget()
+        pair = self.pair_of(current)
+        if current is None or pair is None or new is None:
+            return
+        other = pair.other(current)
+        if other.isVisible() and (new is other or other.isAncestorOf(new)):
+            log.webview.debug(f"Focus moved into {other!r}, selecting it")
+            self.setCurrentWidget(other)
 
     def tab_bar(self) -> "TabBar":
         """Get the TabBar for this TabWidget."""
